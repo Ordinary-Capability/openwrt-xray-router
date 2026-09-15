@@ -1,0 +1,358 @@
+#!/bin/sh
+# XRAY_ROUTER_PROJECT: coherent stack manager for OpenWrt.
+
+set -eu
+
+CONF_DIR="${XRAY_ROUTER_CONF_DIR:-/etc/xray-router}"
+CONFIG_FILE="$CONF_DIR/config.json"
+SETTINGS_FILE="$CONF_DIR/settings.conf"
+CN_FILE="$CONF_DIR/cn-ipv4.txt"
+BACKUP_DIR="$CONF_DIR/backups"
+DHCP_BACKUP="$BACKUP_DIR/dhcp.before-xray-router"
+INIT_SCRIPT="/etc/init.d/xray-router"
+POLICY_SCRIPT="/usr/libexec/xray-router/policy.sh"
+
+say() { printf '%s\n' "$*"; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+load_settings() {
+    [ -r "$SETTINGS_FILE" ] || die "missing $SETTINGS_FILE"
+    # shellcheck disable=SC1090
+    . "$SETTINGS_FILE"
+    : "${XRAY_ASSET_DIR:=/usr/share/xray}"
+    : "${XRAY_DNS_PORT:=1053}"
+    : "${TPROXY_PORT:=12345}"
+    : "${MANAGE_DNSMASQ:=1}"
+    : "${DNSMASQ_CACHE_SIZE:=1000}"
+    : "${CN_LIST_URL:=https://ftp.apnic.net/stats/apnic/delegated-apnic-latest}"
+    : "${ALLOW_BLACKHOLE_PROXY:=0}"
+}
+
+need_root() {
+    [ "$(id -u)" = "0" ] || die "this command must run as root"
+}
+
+need_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+service_running() {
+    [ -x "$INIT_SCRIPT" ] && "$INIT_SCRIPT" running >/dev/null 2>&1
+}
+
+proxy_is_placeholder() {
+    # Parse the matching object: a nearby backup blackhole must not cause a
+    # configured primary to be mistaken for the shipped placeholder.
+    need_command jsonfilter
+    protocol="$(jsonfilter -i "$CONFIG_FILE" -e '@.outbounds[@.tag="proxy-main"].protocol')" \
+        || die "cannot read proxy-main protocol from $CONFIG_FILE"
+    [ "$protocol" = "blackhole" ]
+}
+
+xray_validate() {
+    need_command xray
+    [ -r "$CONFIG_FILE" ] || die "missing $CONFIG_FILE"
+    [ -r "$XRAY_ASSET_DIR/geoip.dat" ] || die "missing $XRAY_ASSET_DIR/geoip.dat"
+    [ -r "$XRAY_ASSET_DIR/geosite.dat" ] || die "missing $XRAY_ASSET_DIR/geosite.dat"
+    XRAY_LOCATION_ASSET="$XRAY_ASSET_DIR" xray run -test -config "$CONFIG_FILE"
+}
+
+validate_all() {
+    load_settings
+    xray_validate
+    "$POLICY_SCRIPT" check
+    if proxy_is_placeholder; then
+        warn "proxy-main is still the shipped blackhole placeholder"
+    fi
+    say "configuration validation passed"
+}
+
+check_other_xray() {
+    service_running && return 0
+    if command -v pidof >/dev/null 2>&1 && pidof xray >/dev/null 2>&1; then
+        die "another Xray process is already running; stop PassWall/old Xray before starting xray-router"
+    fi
+}
+
+dnsmasq_apply() {
+    need_root
+    need_command uci
+    [ -r /etc/config/dhcp ] || die "missing /etc/config/dhcp"
+    uci -q get 'dhcp.@dnsmasq[0]' >/dev/null \
+        || die "no dnsmasq section found in /etc/config/dhcp"
+
+    mkdir -p "$BACKUP_DIR"
+    if [ ! -e "$DHCP_BACKUP" ]; then
+        cp -p /etc/config/dhcp "$DHCP_BACKUP"
+        say "saved dnsmasq baseline to $DHCP_BACKUP"
+    fi
+
+    uci set 'dhcp.@dnsmasq[0].noresolv=1'
+    uci -q delete 'dhcp.@dnsmasq[0].server' || true
+    uci add_list "dhcp.@dnsmasq[0].server=127.0.0.1#$XRAY_DNS_PORT"
+    uci set "dhcp.@dnsmasq[0].cachesize=$DNSMASQ_CACHE_SIZE"
+    uci commit dhcp
+    /etc/init.d/dnsmasq restart
+    say "dnsmasq now caches and forwards Internet DNS to Xray at 127.0.0.1:$XRAY_DNS_PORT"
+}
+
+dnsmasq_restore() {
+    need_root
+    if [ ! -e "$DHCP_BACKUP" ]; then
+        warn "no saved dnsmasq baseline exists; nothing was restored"
+        return 0
+    fi
+    cp -p "$DHCP_BACKUP" /etc/config/dhcp
+    /etc/init.d/dnsmasq restart
+    say "restored the pre-project dnsmasq configuration"
+}
+
+dnsmasq_save_baseline() {
+    need_root
+    service_running && die "stop xray-router before replacing the dnsmasq baseline"
+    mkdir -p "$BACKUP_DIR"
+    cp -p /etc/config/dhcp "$DHCP_BACKUP"
+    say "saved the current dnsmasq configuration as the restore baseline"
+}
+
+start_stack() {
+    need_root
+    load_settings
+    validate_all
+    if proxy_is_placeholder && [ "$ALLOW_BLACKHOLE_PROXY" != "1" ]; then
+        die "replace the proxy-main outbound, or explicitly set ALLOW_BLACKHOLE_PROXY=1"
+    fi
+    check_other_xray
+
+    if service_running; then
+        say "xray-router is already running"
+    else
+        if ! "$INIT_SCRIPT" start; then
+            "$INIT_SCRIPT" stop >/dev/null 2>&1 || true
+            die "xray-router start command failed; inspect: xrayctl logs"
+        fi
+        sleep 1
+        if ! service_running; then
+            "$INIT_SCRIPT" stop >/dev/null 2>&1 || true
+            die "xray-router failed to stay running; inspect: xrayctl logs"
+        fi
+    fi
+
+    if [ "$MANAGE_DNSMASQ" = "1" ]; then
+        if ! dnsmasq_apply; then
+            "$INIT_SCRIPT" stop >/dev/null 2>&1 || true
+            dnsmasq_restore >/dev/null 2>&1 || \
+                warn "dnsmasq setup failed and its saved baseline could not be restored"
+            die "dnsmasq setup failed; xray-router was stopped"
+        fi
+    fi
+    say "xray-router stack started"
+}
+
+stop_stack() {
+    need_root
+    load_settings
+    if [ "$MANAGE_DNSMASQ" = "1" ]; then
+        dnsmasq_restore
+    fi
+    if service_running; then
+        "$INIT_SCRIPT" stop
+    else
+        "$POLICY_SCRIPT" down >/dev/null 2>&1 || true
+    fi
+    say "xray-router stack stopped"
+}
+
+restart_stack() {
+    need_root
+    load_settings
+    validate_all
+    if proxy_is_placeholder && [ "$ALLOW_BLACKHOLE_PROXY" != "1" ]; then
+        die "replace the proxy-main outbound, or explicitly set ALLOW_BLACKHOLE_PROXY=1"
+    fi
+    check_other_xray
+
+    if ! "$INIT_SCRIPT" restart; then
+        [ "$MANAGE_DNSMASQ" = "1" ] && dnsmasq_restore || true
+        "$INIT_SCRIPT" stop >/dev/null 2>&1 || true
+        die "xray-router restart command failed; inspect: xrayctl logs"
+    fi
+    sleep 1
+    if ! service_running; then
+        [ "$MANAGE_DNSMASQ" = "1" ] && dnsmasq_restore || true
+        "$INIT_SCRIPT" stop >/dev/null 2>&1 || true
+        die "restart failed; inspect: xrayctl logs"
+    fi
+    [ "$MANAGE_DNSMASQ" = "1" ] && dnsmasq_apply || true
+    say "xray-router stack restarted"
+}
+
+fetch_url() {
+    url="$1"
+    output="$2"
+    if command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q -O "$output" "$url"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "$output" "$url"
+    elif command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$url" -o "$output"
+    else
+        die "install uclient-fetch, wget, or curl to download the APNIC list"
+    fi
+}
+
+update_cn() {
+    need_root
+    load_settings
+    url="${1:-$CN_LIST_URL}"
+    raw="$(mktemp /tmp/xray-apnic.XXXXXX)"
+    cidrs="$(mktemp /tmp/xray-cn4.XXXXXX)"
+    old="$(mktemp /tmp/xray-cn4-old.XXXXXX)"
+    trap 'rm -f "$raw" "$cidrs" "$old"' EXIT HUP INT TERM
+
+    say "downloading APNIC delegated data"
+    fetch_url "$url" "$raw"
+    awk -F '|' '
+        $1 == "apnic" && $2 == "CN" && $3 == "ipv4" &&
+        ($7 == "allocated" || $7 == "assigned") {
+            count = $5 + 0
+            prefix = 32
+            valid = (count >= 1)
+            while (count > 1) {
+                if (count / 2 != int(count / 2)) { valid = 0; break }
+                count = count / 2
+                prefix--
+            }
+            if (valid) print $4 "/" prefix
+        }
+    ' "$raw" | sort -u > "$cidrs"
+
+    count="$(wc -l < "$cidrs" | tr -d ' ')"
+    [ "$count" -ge 100 ] || die "download produced only $count CN IPv4 prefixes; refusing to install it"
+
+    [ -e "$CN_FILE" ] && cp -p "$CN_FILE" "$old" || : > "$old"
+    cp "$cidrs" "$CN_FILE"
+    if service_running; then
+        if ! "$POLICY_SCRIPT" up; then
+            cp "$old" "$CN_FILE"
+            "$POLICY_SCRIPT" up >/dev/null 2>&1 || true
+            die "new CN list failed to load; restored the previous list"
+        fi
+    fi
+
+    rm -f "$raw" "$cidrs" "$old"
+    trap - EXIT HUP INT TERM
+    say "installed $count CN IPv4 prefixes"
+}
+
+show_status() {
+    load_settings
+    if service_running; then say "service: running"; else say "service: stopped"; fi
+    if "$INIT_SCRIPT" enabled >/dev/null 2>&1; then say "autostart: enabled"; else say "autostart: disabled"; fi
+    if proxy_is_placeholder; then say "proxy-main: BLACKHOLE PLACEHOLDER"; else say "proxy-main: configured"; fi
+    if command -v uci >/dev/null 2>&1; then
+        server="$(uci -q get 'dhcp.@dnsmasq[0].server' 2>/dev/null || true)"
+        say "dnsmasq upstream: ${server:-system/default}"
+    fi
+    "$POLICY_SCRIPT" status
+    if command -v ss >/dev/null 2>&1; then
+        ss -lntup 2>/dev/null | awk -v a=":$TPROXY_PORT" -v b=":$XRAY_DNS_PORT" 'NR == 1 || index($0,a) || index($0,b)'
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -lnptu 2>/dev/null | awk -v a=":$TPROXY_PORT" -v b=":$XRAY_DNS_PORT" 'index($0,a) || index($0,b)'
+    fi
+}
+
+doctor() {
+    load_settings
+    failures=0
+    for cmd in xray fw4 nft ip uci jsonfilter awk grep; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            say "OK   command: $cmd"
+        else
+            say "FAIL command: $cmd"
+            failures=$((failures + 1))
+        fi
+    done
+    if [ -r /etc/openwrt_release ]; then say "OK   OpenWrt release file"; else say "FAIL not an OpenWrt system"; failures=$((failures + 1)); fi
+    if [ -r "$XRAY_ASSET_DIR/geoip.dat" ]; then say "OK   geoip.dat"; else say "FAIL geoip.dat"; failures=$((failures + 1)); fi
+    if [ -r "$XRAY_ASSET_DIR/geosite.dat" ]; then say "OK   geosite.dat"; else say "FAIL geosite.dat"; failures=$((failures + 1)); fi
+    forwarding="$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || printf 0)"
+    if [ "$forwarding" = "1" ]; then say "OK   IPv4 forwarding"; else say "FAIL IPv4 forwarding is disabled"; failures=$((failures + 1)); fi
+    if proxy_is_placeholder; then
+        say "FAIL proxy-main is the blackhole placeholder"
+        failures=$((failures + 1))
+    else
+        say "OK   proxy-main is not the placeholder"
+    fi
+    if command -v pidof >/dev/null 2>&1 && pidof xray >/dev/null 2>&1 && ! service_running; then
+        say "FAIL another Xray process is running"
+        failures=$((failures + 1))
+    fi
+    if uci -q get 'firewall.@defaults[0].auto_includes' 2>/dev/null | grep -qx '0'; then
+        say "FAIL fw4 automatic nftables includes are disabled"
+        failures=$((failures + 1))
+    else
+        say "OK   fw4 automatic nftables includes"
+    fi
+    say "doctor result: $failures failure(s)"
+    [ "$failures" -eq 0 ]
+}
+
+show_logs() {
+    lines="${1:-100}"
+    case "$lines" in ''|*[!0-9]*) die "log line count must be numeric" ;; esac
+    logread -e xray-router | tail -n "$lines"
+}
+
+usage() {
+    cat <<'EOF'
+Usage: xrayctl COMMAND [ARG]
+
+Stack:
+  start                 Validate, start Xray/TProxy, then apply dnsmasq
+  stop                  Restore dnsmasq, then stop Xray/TProxy
+  restart               Validate and restart the active stack
+  status                Show service, DNS, policy-route, and nftables state
+  enable | disable      Enable or disable boot-time service startup
+
+Configuration and maintenance:
+  validate              Test Xray JSON and generated fw4 configuration
+  doctor                Check dependencies, assets, conflicts, and forwarding
+  logs [LINES]           Show recent procd/logread messages (default: 100)
+  firewall-reload       Regenerate and reload only the interception layer
+  firewall-down         Remove only interception and policy routing
+  render-firewall [FILE] Render nftables config without applying it
+  update-cn [URL]       Build CN IPv4 fast-path list from APNIC data
+  dnsmasq-apply         Save baseline and point dnsmasq at Xray
+  dnsmasq-restore       Restore the saved pre-project dnsmasq configuration
+  dnsmasq-save-baseline Replace the saved baseline while the stack is stopped
+EOF
+}
+
+main() {
+    command="${1:-help}"
+    [ "$#" -gt 0 ] && shift || true
+    case "$command" in
+        start) start_stack "$@" ;;
+        stop) stop_stack "$@" ;;
+        restart|reload) restart_stack "$@" ;;
+        status) show_status "$@" ;;
+        enable) need_root; "$INIT_SCRIPT" enable; say "autostart enabled" ;;
+        disable) need_root; "$INIT_SCRIPT" disable; say "autostart disabled" ;;
+        validate) validate_all "$@" ;;
+        doctor) doctor "$@" ;;
+        logs) show_logs "$@" ;;
+        firewall-reload) need_root; "$POLICY_SCRIPT" up ;;
+        firewall-down) need_root; "$POLICY_SCRIPT" down ;;
+        render-firewall) load_settings; "$POLICY_SCRIPT" render "${1:-/tmp/30-xray-router.nft}" ;;
+        update-cn) update_cn "$@" ;;
+        dnsmasq-apply) need_root; load_settings; dnsmasq_apply ;;
+        dnsmasq-restore) need_root; load_settings; dnsmasq_restore ;;
+        dnsmasq-save-baseline) need_root; load_settings; dnsmasq_save_baseline ;;
+        help|-h|--help) usage ;;
+        *) usage >&2; exit 2 ;;
+    esac
+}
+
+main "$@"

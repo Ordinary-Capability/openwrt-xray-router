@@ -1,0 +1,248 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "observatory": {
+    "subjectSelector": [
+      "proxy-main"
+    ],
+    "probeUrl": "https://www.google.com/generate_204",
+    "probeInterval": "10s",
+    "enableConcurrency": true
+  },
+  "dns": {
+    "queryStrategy": "UseIPv4",
+    "disableCache": false,
+    "serveStale": true,
+    "serveExpiredTTL": 3600,
+    "disableFallback": false,
+    "disableFallbackIfMatch": true,
+    "servers": [
+      {
+        "address": "223.5.5.5",
+        "port": 53,
+        "domains": [
+          "geosite:cn"
+        ],
+        "expectedIPs": [
+          "geoip:cn",
+          "*"
+        ],
+        "skipFallback": true,
+        "tag": "dns-cn"
+      },
+      {
+        "address": "https://1.1.1.1/dns-query",
+        "domains": [
+          "geosite:geolocation-!cn"
+        ],
+        "skipFallback": true,
+        "tag": "dns-global"
+      },
+      {
+        "address": "https://1.1.1.1/dns-query",
+        "tag": "dns-global-default"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "tag": "tproxy-in",
+      "listen": "0.0.0.0",
+      "port": 12345,
+      "protocol": "tunnel",
+      "settings": {
+        "allowedNetwork": "tcp,udp",
+        "followRedirect": true
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "routeOnly": true
+      },
+      "streamSettings": {
+        "sockopt": {
+          "tproxy": "tproxy"
+        }
+      }
+    },
+    {
+      "tag": "dns-in",
+      "listen": "127.0.0.1",
+      "port": 1053,
+      "protocol": "tunnel",
+      "settings": {
+        "allowedNetwork": "tcp,udp",
+        "rewriteAddress": "1.1.1.1",
+        "rewritePort": 53,
+        "followRedirect": false
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "proxy-main",
+      "protocol": "blackhole",
+      "settings": {
+        "response": {
+          "type": "none"
+        }
+      }
+    },
+    {
+      "tag": "proxy-backup",
+      "protocol": "blackhole",
+      "settings": {
+        "response": {
+          "type": "none"
+        }
+      }
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {},
+      "streamSettings": {
+        "sockopt": {
+          "mark": 2,
+          "domainStrategy": "UseIPv4"
+        }
+      }
+    },
+    {
+      "tag": "dns-out",
+      "protocol": "dns",
+      "settings": {
+        "rewriteNetwork": "udp",
+        "rewriteAddress": "1.1.1.1",
+        "rewritePort": 53,
+        "rules": [
+          {
+            "action": "hijack",
+            "qType": "1,28"
+          },
+          {
+            "action": "direct"
+          }
+        ]
+      },
+      "streamSettings": {
+        "sockopt": {
+          "mark": 2,
+          "dialerProxy": "proxy-main"
+        }
+      }
+    },
+    {
+      "tag": "blocked",
+      "protocol": "blackhole",
+      "settings": {
+        "response": {
+          "type": "none"
+        }
+      }
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "balancers": [
+      {
+        "tag": "proxy-failover",
+        "selector": [
+          "proxy-main"
+        ],
+        "fallbackTag": "proxy-backup",
+        "strategy": {
+          "type": "leastPing"
+        }
+      }
+    ],
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": [
+          "dns-in"
+        ],
+        "outboundTag": "dns-out",
+        "ruleTag": "DNS-IN-HIJACK"
+      },
+      {
+        "type": "field",
+        "inboundTag": [
+          "tproxy-in"
+        ],
+        "port": 53,
+        "network": "tcp,udp",
+        "outboundTag": "dns-out",
+        "ruleTag": "DNS-TRANSPARENT-HIJACK"
+      },
+      {
+        "type": "field",
+        "inboundTag": [
+          "dns-cn"
+        ],
+        "outboundTag": "direct",
+        "ruleTag": "DNS-CN-DIRECT"
+      },
+      {
+        "type": "field",
+        "inboundTag": [
+          "dns-global",
+          "dns-global-default"
+        ],
+        "outboundTag": "proxy-main",
+        "ruleTag": "DNS-GLOBAL-PROXY"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "direct",
+        "ruleTag": "PRIVATE-DIRECT"
+      },
+      {
+        "type": "field",
+        "domain": [
+          "domain:example-direct.invalid"
+        ],
+        "outboundTag": "direct",
+        "ruleTag": "FORCE-DIRECT"
+      },
+      {
+        "type": "field",
+        "domain": [
+          "domain:example-proxy.invalid"
+        ],
+        "balancerTag": "proxy-failover",
+        "ruleTag": "FORCE-PROXY"
+      },
+      {
+        "type": "field",
+        "domain": [
+          "geosite:cn"
+        ],
+        "outboundTag": "direct",
+        "ruleTag": "CN-DOMAIN-DIRECT"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "geoip:cn"
+        ],
+        "outboundTag": "direct",
+        "ruleTag": "CN-IP-DIRECT"
+      },
+      {
+        "type": "field",
+        "network": "tcp,udp",
+        "balancerTag": "proxy-failover",
+        "ruleTag": "DEFAULT-PROXY"
+      }
+    ]
+  }
+}

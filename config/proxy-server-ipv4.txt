@@ -1,0 +1,7 @@
+# Optional literal IPv4 addresses of proxy servers, one address/CIDR per line.
+# Include endpoints for both proxy-main and proxy-backup.
+# They bypass LAN interception. Router-originated Xray sockets are not intercepted
+# in this project's LAN-only design, so this list is mainly defensive/future-proof.
+#
+# Example:
+# 203.0.113.10/32

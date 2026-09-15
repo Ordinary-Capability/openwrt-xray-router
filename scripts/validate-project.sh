@@ -1,0 +1,30 @@
+#!/bin/sh
+
+set -eu
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+TEMP="$(mktemp /tmp/xray-router-nft.XXXXXX)"
+trap 'rm -f "$TEMP"' EXIT HUP INT TERM
+
+for file in "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/src/xrayctl" \
+            "$ROOT/src/policy.sh" "$ROOT/src/xray-router.init" \
+            "$ROOT/tests/test-policy.sh" "$ROOT/tests/test-placeholder.sh"; do
+    sh -n "$file"
+done
+
+if command -v jq >/dev/null 2>&1; then
+    jq empty "$ROOT/config/config.json"
+    jq empty "$ROOT/examples/outbound-vless-reality-xray-26.json"
+    jq empty "$ROOT/examples/outbound-socks5.json"
+fi
+
+XRAY_ROUTER_CONF_DIR="$ROOT/config" sh "$ROOT/src/policy.sh" render "$TEMP" >/dev/null
+grep -q 'chain xray_prerouting' "$TEMP"
+grep -q 'fib daddr type local' "$TEMP"
+grep -q 'tproxy ip to 127.0.0.1:12345' "$TEMP"
+grep -q 'meta nfproto ipv6.*reject' "$TEMP"
+
+sh "$ROOT/tests/test-policy.sh"
+sh "$ROOT/tests/test-placeholder.sh"
+
+printf '%s\n' 'project static validation passed'

@@ -1,0 +1,13 @@
+{
+  "tag": "proxy-main",
+  "protocol": "socks",
+  "settings": {
+    "address": "127.0.0.1",
+    "port": 1080
+  },
+  "streamSettings": {
+    "sockopt": {
+      "mark": 2
+    }
+  }
+}

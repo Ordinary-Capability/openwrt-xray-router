@@ -1,0 +1,480 @@
+#!/bin/sh
+# XRAY_ROUTER_PROJECT: fw4/nftables and policy-routing manager.
+
+set -eu
+
+CONF_DIR="${XRAY_ROUTER_CONF_DIR:-/etc/xray-router}"
+SETTINGS_FILE="$CONF_DIR/settings.conf"
+CN_FILE="$CONF_DIR/cn-ipv4.txt"
+PROXY_IP_FILE="$CONF_DIR/proxy-server-ipv4.txt"
+NFT_INCLUDE_LINK="${XRAY_ROUTER_NFT_INCLUDE_LINK:-/usr/share/nftables.d/table-post/30-xray-router.nft}"
+NFT_RUNTIME_DIR="${XRAY_ROUTER_NFT_RUNTIME_DIR:-/tmp/xray-router}"
+NFT_RUNTIME_FILE="$NFT_RUNTIME_DIR/30-xray-router.nft"
+LOCK_DIR="${XRAY_ROUTER_LOCK_DIR:-/var/lock/xray-router-policy.lock}"
+FIREWALL_INIT="${XRAY_ROUTER_FIREWALL_INIT:-/etc/init.d/firewall}"
+
+log() {
+    if command -v logger >/dev/null 2>&1; then
+        logger -t xray-router -- "$*"
+    fi
+    printf '%s\n' "$*"
+}
+
+die() {
+    printf 'xray-router policy: %s\n' "$*" >&2
+    exit 1
+}
+
+load_settings() {
+    [ -r "$SETTINGS_FILE" ] || die "missing $SETTINGS_FILE"
+    # The settings file is administrator-owned shell syntax.
+    # shellcheck disable=SC1090
+    . "$SETTINGS_FILE"
+
+    : "${LAN_INTERFACES:=br-lan}"
+    : "${TPROXY_PORT:=12345}"
+    : "${XRAY_DNS_PORT:=1053}"
+    : "${TPROXY_MARK:=0x1}"
+    : "${OUTBOUND_MARK:=0x2}"
+    : "${ROUTE_TABLE:=100}"
+    : "${RULE_PRIORITY:=10010}"
+    : "${ENABLE_CN_FASTPATH:=1}"
+    : "${IPV6_MODE:=block}"
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+validate_uint() {
+    case "$2" in
+        ''|*[!0-9]*) die "$1 must be an unsigned integer: $2" ;;
+    esac
+}
+
+validate_mark() {
+    value="$2"
+    case "$value" in
+        0x*|0X*)
+            digits="${value#??}"
+            [ -n "$digits" ] || die "$1 has no hexadecimal digits: $value"
+            case "$digits" in *[!0-9a-fA-F]*) die "$1 must be hexadecimal: $value" ;; esac
+            ;;
+        *) validate_uint "$1" "$value" ;;
+    esac
+}
+
+validate_settings() {
+    [ -n "$LAN_INTERFACES" ] || die "LAN_INTERFACES cannot be empty"
+    for dev in $LAN_INTERFACES; do
+        printf '%s\n' "$dev" | grep -Eq '^[A-Za-z0-9_.:@+-]+$' \
+            || die "unsafe interface name: $dev"
+    done
+
+    validate_uint TPROXY_PORT "$TPROXY_PORT"
+    validate_uint XRAY_DNS_PORT "$XRAY_DNS_PORT"
+    validate_uint ROUTE_TABLE "$ROUTE_TABLE"
+    validate_uint RULE_PRIORITY "$RULE_PRIORITY"
+    validate_mark TPROXY_MARK "$TPROXY_MARK"
+    validate_mark OUTBOUND_MARK "$OUTBOUND_MARK"
+
+    [ "$TPROXY_PORT" -ge 1 ] && [ "$TPROXY_PORT" -le 65535 ] \
+        || die "TPROXY_PORT is outside 1..65535"
+    [ "$XRAY_DNS_PORT" -ge 1 ] && [ "$XRAY_DNS_PORT" -le 65535 ] \
+        || die "XRAY_DNS_PORT is outside 1..65535"
+    case "$ENABLE_CN_FASTPATH" in 0|1) ;; *) die "ENABLE_CN_FASTPATH must be 0 or 1" ;; esac
+    case "$IPV6_MODE" in block|bypass) ;; *) die "IPV6_MODE must be block or bypass" ;; esac
+
+    TPROXY_MARK_HEX="$(printf '0x%x' "$((TPROXY_MARK))")"
+}
+
+validate_ipv4_list() {
+    file="$1"
+    [ -e "$file" ] || return 0
+    awk '
+        function valid_ip(s, a, n, i) {
+            n = split(s, a, "[.]")
+            if (n != 4) return 0
+            for (i = 1; i <= 4; i++) {
+                if (a[i] !~ /^[0-9]+$/ || a[i] + 0 < 0 || a[i] + 0 > 255) return 0
+            }
+            return 1
+        }
+        {
+            line = $0
+            sub(/#.*/, "", line)
+            gsub(/^[ \t]+|[ \t]+$/, "", line)
+            if (line == "") next
+            if (line ~ /[ \t]/) {
+                printf("invalid extra text at %s:%d: %s\n", FILENAME, NR, line) > "/dev/stderr"
+                bad = 1
+                next
+            }
+            n = split(line, part, "/")
+            if (n > 2 || !valid_ip(part[1]) ||
+                (n == 2 && (part[2] !~ /^[0-9]+$/ || part[2] + 0 < 0 || part[2] + 0 > 32))) {
+                printf("invalid IPv4/CIDR at %s:%d: %s\n", FILENAME, NR, line) > "/dev/stderr"
+                bad = 1
+            }
+        }
+        END { exit bad ? 1 : 0 }
+    ' "$file" || die "invalid address list: $file"
+}
+
+emit_elements() {
+    file="$1"
+    [ -e "$file" ] || return 0
+    awk '
+        {
+            line = $0
+            sub(/#.*/, "", line)
+            gsub(/^[ \t]+|[ \t]+$/, "", line)
+            if (line == "") next
+            if (count++) printf(",\n")
+            printf("            %s", line)
+        }
+        END { if (count) printf("\n") }
+    ' "$file"
+}
+
+list_has_elements() {
+    file="$1"
+    [ -e "$file" ] || return 1
+    awk '
+        {
+            line = $0
+            sub(/#.*/, "", line)
+            gsub(/^[ \t]+|[ \t]+$/, "", line)
+            if (line != "") { found = 1; exit }
+        }
+        END { exit found ? 0 : 1 }
+    ' "$file"
+}
+
+format_interfaces() {
+    first=1
+    for dev in $LAN_INTERFACES; do
+        [ "$first" -eq 1 ] || printf ', '
+        printf '"%s"' "$dev"
+        first=0
+    done
+}
+
+render_nft() {
+    target="$1"
+    validate_ipv4_list "$CN_FILE"
+    validate_ipv4_list "$PROXY_IP_FILE"
+    interfaces="$(format_interfaces)"
+
+    umask 022
+    {
+        printf '%s\n' '# XRAY_ROUTER_PROJECT: generated by /usr/libexec/xray-router/policy.sh'
+        printf '%s\n' '# Included inside table inet fw4 at table-post position.'
+        printf '%s\n\n' '# Edit settings.conf and the address-list files, then run xrayctl firewall-reload.'
+
+        cat <<'EOF'
+set xray_reserved4 {
+    type ipv4_addr
+    flags interval
+    auto-merge
+    elements = {
+        0.0.0.0/8,
+        10.0.0.0/8,
+        100.64.0.0/10,
+        127.0.0.0/8,
+        169.254.0.0/16,
+        172.16.0.0/12,
+        192.0.0.0/24,
+        192.0.2.0/24,
+        192.168.0.0/16,
+        198.18.0.0/15,
+        198.51.100.0/24,
+        203.0.113.0/24,
+        224.0.0.0/4,
+        240.0.0.0/4,
+        255.255.255.255/32
+    }
+}
+
+set xray_reserved6 {
+    type ipv6_addr
+    flags interval
+    auto-merge
+    elements = {
+        ::/128,
+        ::1/128,
+        fc00::/7,
+        fe80::/10,
+        ff00::/8
+    }
+}
+
+set xray_proxy_servers4 {
+    type ipv4_addr
+    flags interval
+    auto-merge
+EOF
+        if list_has_elements "$PROXY_IP_FILE"; then
+            printf '%s\n' '    elements = {'
+            emit_elements "$PROXY_IP_FILE"
+            printf '%s\n' '    }'
+        fi
+        printf '%s\n\n' '}'
+
+        cat <<'EOF'
+set xray_cn4 {
+    type ipv4_addr
+    flags interval
+    auto-merge
+EOF
+        if list_has_elements "$CN_FILE"; then
+            printf '%s\n' '    elements = {'
+            emit_elements "$CN_FILE"
+            printf '%s\n' '    }'
+        fi
+        printf '%s\n\n' '}'
+
+        printf '%s\n' 'chain xray_prerouting {'
+        printf '%s\n' '    type filter hook prerouting priority mangle; policy accept;'
+        printf '    iifname != { %s } return\n' "$interfaces"
+        printf '    meta mark %s return\n' "$OUTBOUND_MARK"
+        printf '%s\n' '    fib daddr type local counter return'
+        printf '%s\n' '    ip daddr @xray_reserved4 counter return'
+        printf '%s\n' '    ip daddr @xray_proxy_servers4 counter return'
+        if [ "$ENABLE_CN_FASTPATH" = "1" ]; then
+            printf '%s\n' '    ip daddr @xray_cn4 counter return'
+        fi
+
+        if [ "$IPV6_MODE" = "block" ]; then
+            printf '%s\n' '    ip6 daddr @xray_reserved6 counter return'
+            printf '%s\n' '    meta nfproto ipv6 counter reject with icmpv6 type admin-prohibited'
+        else
+            printf '%s\n' '    meta nfproto ipv6 counter return'
+        fi
+
+        printf '    meta l4proto tcp counter tproxy ip to 127.0.0.1:%s meta mark set %s accept\n' \
+            "$TPROXY_PORT" "$TPROXY_MARK"
+        printf '    meta l4proto udp counter tproxy ip to 127.0.0.1:%s meta mark set %s accept\n' \
+            "$TPROXY_PORT" "$TPROXY_MARK"
+        printf '%s\n' '}'
+    } > "$target"
+}
+
+acquire_lock() {
+    attempts=0
+    while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 15 ] || die "timed out waiting for $LOCK_DIR"
+        sleep 1
+    done
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT HUP INT TERM
+}
+
+release_lock() {
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    trap - EXIT HUP INT TERM
+}
+
+policy_rule_line() {
+    ip -4 rule show | awk -v key="$RULE_PRIORITY:" '$1 == key { print }'
+}
+
+ensure_policy_route() {
+    existing_routes="$(ip -4 route show table "$ROUTE_TABLE" 2>/dev/null || true)"
+    existing="$(policy_rule_line)"
+
+    rule_count="$(printf '%s\n' "$existing" | awk 'NF { count++ } END { print count + 0 }')"
+    [ "$rule_count" -le 1 ] \
+        || die "multiple IP rules already use priority $RULE_PRIORITY: $existing"
+    if [ -n "$existing" ]; then
+        case "$existing" in
+            *"fwmark $TPROXY_MARK_HEX"*"lookup $ROUTE_TABLE"*) ;;
+            *) die "IP rule priority $RULE_PRIORITY is already used: $existing" ;;
+        esac
+    elif [ -n "$existing_routes" ]; then
+        die "routing table $ROUTE_TABLE is already in use without this project's rule: $existing_routes"
+    fi
+
+    if [ -n "$existing_routes" ]; then
+        route_count="$(printf '%s\n' "$existing_routes" | awk 'NF { count++ } END { print count + 0 }')"
+        [ "$route_count" -eq 1 ] \
+            || die "routing table $ROUTE_TABLE contains multiple routes: $existing_routes"
+        case "$existing_routes" in
+            "local default dev lo"*|"local 0.0.0.0/0 dev lo"*) ;;
+            *) die "routing table $ROUTE_TABLE is already in use: $existing_routes" ;;
+        esac
+    fi
+
+    if [ -z "$existing" ]; then
+        ip -4 rule add fwmark "$TPROXY_MARK/$TPROXY_MARK" table "$ROUTE_TABLE" priority "$RULE_PRIORITY"
+    fi
+    ip -4 route replace local 0.0.0.0/0 dev lo table "$ROUTE_TABLE"
+}
+
+remove_policy_route() {
+    existing="$(policy_rule_line)"
+    rule_count="$(printf '%s\n' "$existing" | awk 'NF { count++ } END { print count + 0 }')"
+    case "$rule_count:$existing" in
+        1:*"fwmark $TPROXY_MARK_HEX"*"lookup $ROUTE_TABLE"*)
+            ip -4 rule del priority "$RULE_PRIORITY" >/dev/null 2>&1 || true
+            ip -4 route del local 0.0.0.0/0 dev lo table "$ROUTE_TABLE" >/dev/null 2>&1 || true
+            ;;
+    esac
+}
+
+check_generated_with_fw4() {
+    generated="$1"
+    backup="/tmp/30-xray-router.nft.backup.$$"
+    had_old=0
+
+    ensure_include_link
+    if [ -e "$NFT_RUNTIME_FILE" ]; then
+        grep -q 'XRAY_ROUTER_PROJECT' "$NFT_RUNTIME_FILE" \
+            || die "refusing to replace unrelated $NFT_RUNTIME_FILE"
+        cp -p "$NFT_RUNTIME_FILE" "$backup"
+        had_old=1
+    fi
+
+    cp "$generated" "$NFT_RUNTIME_FILE"
+    if fw4 check; then
+        result=0
+    else
+        result=$?
+    fi
+
+    if [ "$had_old" -eq 1 ]; then
+        mv "$backup" "$NFT_RUNTIME_FILE"
+    else
+        rm -f "$NFT_RUNTIME_FILE"
+    fi
+    return "$result"
+}
+
+ensure_include_link() {
+    mkdir -p "$(dirname "$NFT_INCLUDE_LINK")" "$NFT_RUNTIME_DIR"
+    if [ -L "$NFT_INCLUDE_LINK" ]; then
+        target="$(readlink "$NFT_INCLUDE_LINK")"
+        [ "$target" = "$NFT_RUNTIME_FILE" ] \
+            || die "refusing to replace unrelated symlink $NFT_INCLUDE_LINK -> $target"
+        return 0
+    fi
+    if [ -e "$NFT_INCLUDE_LINK" ]; then
+        grep -q 'XRAY_ROUTER_PROJECT' "$NFT_INCLUDE_LINK" \
+            || die "refusing to replace unrelated $NFT_INCLUDE_LINK"
+        mv "$NFT_INCLUDE_LINK" "$NFT_RUNTIME_FILE"
+    fi
+    ln -s "$NFT_RUNTIME_FILE" "$NFT_INCLUDE_LINK"
+}
+
+policy_check() {
+    require_command fw4
+    acquire_lock
+    temp="/tmp/30-xray-router.nft.check.$$"
+    trap 'rm -f "$temp"; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT HUP INT TERM
+    render_nft "$temp"
+    check_generated_with_fw4 "$temp" || die "fw4 rejected the generated nftables configuration"
+    rm -f "$temp"
+    release_lock
+    log "nftables configuration check passed"
+}
+
+policy_up() {
+    require_command fw4
+    require_command ip
+    acquire_lock
+    temp="/tmp/30-xray-router.nft.new.$$"
+    previous="/tmp/30-xray-router.nft.previous.$$"
+    had_previous=0
+    trap 'rm -f "$temp" "$previous"; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT HUP INT TERM
+
+    render_nft "$temp"
+    check_generated_with_fw4 "$temp" || die "fw4 rejected the generated nftables configuration"
+    ensure_policy_route
+
+    ensure_include_link
+    if [ -e "$NFT_RUNTIME_FILE" ]; then
+        grep -q 'XRAY_ROUTER_PROJECT' "$NFT_RUNTIME_FILE" \
+            || die "refusing to replace unrelated $NFT_RUNTIME_FILE"
+        cp -p "$NFT_RUNTIME_FILE" "$previous"
+        had_previous=1
+    fi
+    mv "$temp" "$NFT_RUNTIME_FILE"
+    if ! "$FIREWALL_INIT" reload; then
+        if [ "$had_previous" -eq 1 ]; then mv "$previous" "$NFT_RUNTIME_FILE"; else rm -f "$NFT_RUNTIME_FILE"; fi
+        "$FIREWALL_INIT" reload >/dev/null 2>&1 || true
+        [ "$had_previous" -eq 1 ] || remove_policy_route
+        die "firewall reload failed; previous state was restored where possible"
+    fi
+
+    rm -f "$previous"
+    release_lock
+    log "transparent interception enabled on: $LAN_INTERFACES"
+}
+
+policy_down() {
+    require_command fw4
+    require_command ip
+    acquire_lock
+    managed_include=0
+    if [ -e "$NFT_INCLUDE_LINK" ] && [ ! -L "$NFT_INCLUDE_LINK" ]; then
+        ensure_include_link
+        managed_include=1
+    elif [ -L "$NFT_INCLUDE_LINK" ]; then
+        target="$(readlink "$NFT_INCLUDE_LINK")"
+        [ "$target" = "$NFT_RUNTIME_FILE" ] \
+            || die "refusing to use unrelated symlink $NFT_INCLUDE_LINK -> $target"
+        managed_include=1
+    fi
+    if [ -e "$NFT_RUNTIME_FILE" ]; then
+        grep -q 'XRAY_ROUTER_PROJECT' "$NFT_RUNTIME_FILE" \
+            || die "refusing to remove unrelated $NFT_RUNTIME_FILE"
+        disabled="/tmp/30-xray-router.nft.disabled.$$"
+        mv "$NFT_RUNTIME_FILE" "$disabled"
+        if "$FIREWALL_INIT" reload; then
+            rm -f "$disabled"
+        else
+            mv "$disabled" "$NFT_RUNTIME_FILE"
+            die "firewall reload failed; retained the previous Xray rules"
+        fi
+    elif [ "$managed_include" -eq 1 ]; then
+        "$FIREWALL_INIT" reload \
+            || die "firewall reload failed while clearing inactive Xray rules"
+    fi
+    remove_policy_route
+    release_lock
+    log "transparent interception disabled"
+}
+
+policy_status() {
+    printf '%s\n' 'Policy rule:'
+    policy_rule_line || true
+    printf '%s\n' 'Policy route:'
+    ip -4 route show table "$ROUTE_TABLE" 2>/dev/null || true
+    printf '%s\n' 'nftables chain:'
+    nft list chain inet fw4 xray_prerouting 2>/dev/null || printf '%s\n' '(not loaded)'
+}
+
+main() {
+    command="${1:-help}"
+    shift || true
+    load_settings
+    validate_settings
+
+    case "$command" in
+        render)
+            target="${1:-/tmp/30-xray-router.nft}"
+            render_nft "$target"
+            printf '%s\n' "$target"
+            ;;
+        check) policy_check ;;
+        up) policy_up ;;
+        down) policy_down ;;
+        status) policy_status ;;
+        *)
+            printf '%s\n' "Usage: $0 {render [FILE]|check|up|down|status}" >&2
+            exit 2
+            ;;
+    esac
+}
+
+main "$@"
