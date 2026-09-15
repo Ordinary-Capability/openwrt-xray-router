@@ -103,6 +103,15 @@
       }
     },
     {
+      "tag": "proxy-stream",
+      "protocol": "blackhole",
+      "settings": {
+        "response": {
+          "type": "none"
+        }
+      }
+    },
+    {
       "tag": "direct",
       "protocol": "freedom",
       "settings": {},
@@ -212,6 +221,17 @@
         ],
         "outboundTag": "direct",
         "ruleTag": "FORCE-DIRECT"
+      },
+      {
+        "type": "field",
+        "inboundTag": [
+          "tproxy-in"
+        ],
+        "domain": [
+          "domain:example-stream.invalid"
+        ],
+        "outboundTag": "proxy-stream",
+        "ruleTag": "STREAMING-PROXY"
       },
       {
         "type": "field",

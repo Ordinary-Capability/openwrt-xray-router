@@ -8,6 +8,7 @@ flowchart TD
     NFT -->|private, proxy IP, optional CN IP| FAST[kernel direct path]
     NFT -->|other IPv4 TCP/UDP| XRAY[Xray TProxy]
     XRAY --> DIRECT[direct outbound]
+    XRAY -->|configured streaming domains| STREAM[proxy-stream outbound]
     XRAY --> BAL[proxy-failover balancer]
     BAL -->|healthy| PROXY[proxy-main outbound]
     BAL -->|primary unavailable| BACKUP[proxy-backup outbound]
@@ -79,6 +80,21 @@ Before the first successful primary probe, the backup is selected. Failed
 connections are not replayed, and existing sessions are not migrated. If the
 backup is also unavailable (or remains the shipped blackhole), proxied traffic
 fails closed. Direct/CN traffic retains its existing routing policy.
+
+## Dedicated streaming selection
+
+The optional `STREAMING-PROXY` rule sends matching `tproxy-in` traffic to
+`proxy-stream`. It follows DNS/private/force-direct handling and precedes
+force-proxy/CN/default rules. Its shipped `.invalid` domain leaves it inactive
+for real services until the administrator installs the streaming preset and
+configures the outbound. It is not a member of the primary/backup balancer or
+observatory selector, and has no automatic fallback.
+
+GeoSite matching covers identifiable service/CDN domains, not every connection
+made by an application. CN kernel bypass still happens before Xray; disable
+the fast path when streaming rules must take priority over CN addresses.
+DNS keeps the policy above and may require a separate change when the stream
+exit region differs from the primary. See [Streaming setup](STREAMING.md).
 
 ## Stop and failure behavior
 

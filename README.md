@@ -209,6 +209,26 @@ merge `observatory`, the `proxy-backup` outbound, `routing.balancers`, and the
 `balancerTag` changes in `FORCE-PROXY` and `DEFAULT-PROXY` from the supplied
 `config/config.json`. Reinstallation preserves your existing configuration.
 
+### Use a dedicated streaming node
+
+An optional `proxy-stream` outbound can keep Netflix, Amazon Prime Video,
+HBO/Max, and Disney+ on a separate VLESS/REALITY node. The default streaming
+rule matches only `example-stream.invalid`, so normal traffic keeps its
+existing routing until you configure the node and enable the streaming preset.
+
+Use `examples/outbound-stream-vless-reality.json` for the outbound and
+`examples/routing-streaming.json` for the GeoSite rule. Replace the matching
+objects in the installed configuration after filling in the real node details;
+the example public key is deliberately a placeholder. Streaming goes straight
+to this outbound, without the primary/backup balancer. Explicit force-direct
+rules retain priority.
+
+See [Streaming setup](docs/STREAMING.md) for activation, migration, DNS and
+CN fast-path considerations, and how to add more services. LuCI's Streaming
+outbound section edits the node, enables/disables streaming, and adds the
+service presets or custom domains. Older installations gain the missing
+streaming objects on Save & Apply.
+
 ### Tune domain policy
 
 Replace the reserved `.invalid` examples in these two rules:
@@ -224,10 +244,11 @@ are evaluated top to bottom. The supplied order is:
 1. DNS handling.
 2. Private addresses direct.
 3. Force-direct domains.
-4. Force-proxy domains.
-5. `geosite:cn` direct.
-6. `geoip:cn` direct.
-7. Everything else through the primary/backup proxy balancer.
+4. Streaming domains through `proxy-stream` (inactive until configured).
+5. Force-proxy domains.
+6. `geosite:cn` direct.
+7. `geoip:cn` direct.
+8. Everything else through the primary/backup proxy balancer.
 
 ### Check ports and interfaces
 

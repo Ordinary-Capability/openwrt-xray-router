@@ -1,0 +1,14 @@
+{
+  "type": "field",
+  "inboundTag": [
+    "tproxy-in"
+  ],
+  "domain": [
+    "geosite:netflix",
+    "geosite:primevideo",
+    "geosite:hbo",
+    "geosite:disney"
+  ],
+  "outboundTag": "proxy-stream",
+  "ruleTag": "STREAMING-PROXY"
+}

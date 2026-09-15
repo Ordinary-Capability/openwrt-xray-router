@@ -173,6 +173,108 @@ class BackendTest(unittest.TestCase):
         request['config'] = json.dumps(config)
         self.assertFalse(self.call(request)[0])
 
+    def streaming_request(self):
+        request = self.request()
+        config = json.loads(request['config'])
+        stream = next(o for o in config['outbounds'] if o['tag'] == 'proxy-stream')
+        stream.update(json.loads((ROOT / 'examples/outbound-stream-vless-reality.json').read_text()))
+        rule = next(r for r in config['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')
+        rule.update(json.loads((ROOT / 'examples/routing-streaming.json').read_text()))
+        request['config'] = json.dumps(config)
+        return request
+
+    def test_streaming_enable_disable_preserves_node_and_domains(self):
+        request = self.streaming_request()
+        ok, result = self.call(request)
+        self.assertTrue(ok, result)
+        self.assertEqual(result['code'], 0)
+        enabled = json.loads(request['config'])
+        disabled = json.loads(request['config'])
+        rule = next(r for r in disabled['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')
+        rule['inboundTag'] = ['xray-router-stream-disabled']
+        request.update(config=json.dumps(disabled), revision=self.revision())
+        ok, result = self.call(request)
+        self.assertTrue(ok, result)
+        self.assertEqual(result['code'], 0)
+        saved = json.loads(self.fs[self.conf + '/config.json'])
+        self.assertEqual(saved['outbounds'], enabled['outbounds'])
+        self.assertEqual(saved['dns'], enabled['dns'])
+        self.assertEqual(rule['domain'], next(r for r in enabled['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')['domain'])
+        request.update(config=json.dumps(enabled), revision=self.revision())
+        self.assertTrue(self.call(request)[0])
+
+    def test_streaming_upgrade_from_config_without_streaming(self):
+        legacy = json.loads(self.original['config.json'])
+        legacy['outbounds'] = [o for o in legacy['outbounds'] if o['tag'] != 'proxy-stream']
+        legacy['routing']['rules'] = [r for r in legacy['routing']['rules'] if r['ruleTag'] != 'STREAMING-PROXY']
+        request = self.streaming_request()
+        candidate = json.loads(request['config'])
+        # Match the UI's append-only outbound migration; keep existing outbound order.
+        stream = next(o for o in candidate['outbounds'] if o['tag'] == 'proxy-stream')
+        candidate['outbounds'].remove(stream)
+        candidate['outbounds'].append(stream)
+        self.fs[self.conf + '/config.json'] = json.dumps(legacy)
+        self.original = self.snapshot()
+        request.update(config=json.dumps(candidate), revision=self.revision())
+        ok, result = self.call(request)
+        self.assertTrue(ok, result)
+        self.assertEqual(result['code'], 0)
+        self.assertEqual(self.fs[self.conf + '/backups/luci-last/config.json'], self.original['config.json'])
+        self.assertTrue(self.call({'action': 'rollback', 'revision': self.revision()})[0])
+        self.assertEqual(self.snapshot(), self.original)
+
+    def test_streaming_scope_destination_order_and_duplicates_rejected(self):
+        for kind in ['inbound', 'destination', 'balancer', 'order', 'duplicate-rule', 'duplicate-node', 'remove', 'extra-field']:
+            with self.subTest(kind=kind):
+                request = self.streaming_request()
+                config = json.loads(request['config'])
+                rule = next(r for r in config['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')
+                if kind == 'inbound': rule['inboundTag'] = ['dns-global']
+                if kind == 'destination': rule['outboundTag'] = 'direct'
+                if kind == 'balancer': rule['balancerTag'] = 'proxy-failover'
+                if kind == 'order':
+                    config['routing']['rules'].remove(rule)
+                    config['routing']['rules'].insert(0, rule)
+                if kind == 'duplicate-rule': config['routing']['rules'].append(rule)
+                if kind == 'duplicate-node': config['outbounds'].append(next(o for o in config['outbounds'] if o['tag'] == 'proxy-stream'))
+                if kind == 'remove': config['routing']['rules'].remove(rule)
+                if kind == 'extra-field': rule['port'] = '443'
+                request['config'] = json.dumps(config)
+                self.assertFalse(self.call(request)[0])
+        self.assertFalse(self.calls)
+        self.assertEqual(self.snapshot(), self.original)
+
+    def test_streaming_blackhole_and_invalid_domains_rejected(self):
+        for domains in [[], [''], ['domain:bad name'], {'0': 'netflix.com'}]:
+            request = self.streaming_request()
+            config = json.loads(request['config'])
+            next(r for r in config['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')['domain'] = domains
+            request['config'] = json.dumps(config)
+            self.assertFalse(self.call(request)[0])
+        request = self.streaming_request()
+        config = json.loads(request['config'])
+        next(o for o in config['outbounds'] if o['tag'] == 'proxy-stream')['protocol'] = 'blackhole'
+        request['config'] = json.dumps(config)
+        ok, error = self.call(request)
+        self.assertFalse(ok)
+        self.assertIn('Configure the streaming node', error)
+        self.assertFalse(self.calls)
+
+    def test_streaming_failed_restart_rolls_back_node_domains_and_enablement(self):
+        self.running = True
+        self.restart_failures = 1
+        ok, result = self.call(self.streaming_request())
+        self.assertTrue(ok)
+        self.assertEqual(result['code'], 1)
+        self.assertEqual(self.snapshot(), self.original)
+
+    def test_streaming_validation_failure_retains_configuration(self):
+        self.validation_fails = True
+        ok, result = self.call(self.streaming_request())
+        self.assertTrue(ok)
+        self.assertEqual(result['code'], 1)
+        self.assertEqual(self.snapshot(), self.original)
+
     def test_unknown_action_rejected(self):
         self.assertFalse(self.call({'action': 'stop; reboot'})[0])
         self.assertFalse(self.calls)

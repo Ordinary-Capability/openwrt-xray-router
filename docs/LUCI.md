@@ -45,6 +45,12 @@ in the Windows development environment.
 - **Primary and backup:** edit complete outbound objects independently. The
   SOCKS5 and VLESS REALITY templates contain example values to replace. The
   app preserves advanced protocol fields and fixes each object's tag.
+- **Streaming outbound:** configure a separate node with the same outbound
+  editor and VLESS REALITY/SOCKS5 templates. Enable streaming routing, add the
+  Netflix/Prime Video/HBO/Max/Disney+ presets, or enter custom domains. Preset
+  additions retain custom entries and avoid duplicates. Disable streaming
+  without losing the node or domain list. An enabled streaming route requires
+  a non-blackhole node and at least one domain. See [Streaming setup](STREAMING.md).
 - **Health checks:** set an HTTP(S) probe URL and an interval of 1–3600 seconds.
 - **Routing:** select LAN interfaces, CN fast path, IPv6 handling, and forced
   domain rules. Bare domains become `domain:` entries. Empty domain lists use
@@ -56,6 +62,18 @@ The primary is preferred for client traffic. Global DNS keeps using the
 primary; this UI does not introduce DNS failover. The status indicator reports
 whether the service is running, not which outbound the health checker selected.
 Probe details are available in Xray logs when its log level is `info`.
+
+Streaming connects to its dedicated node without fallback. Force-direct
+rules take priority, and CN fast path can bypass the streaming rules. Global
+DNS keeps using the primary. The page explains these limits beside the
+streaming settings. Disabling streaming affects the domain rule only; any
+separate custom IP rules configured through SSH retain their own behavior.
+
+Older configurations without streaming objects load normally. Saving adds
+only the missing `proxy-stream` outbound and `STREAMING-PROXY` rule after
+`FORCE-DIRECT`. Streaming remains disabled until explicitly enabled. Existing
+streaming objects and their additional fields are preserved; the UI can edit
+only the node, domain list and enabled state, not rule order or destination.
 
 ## Save, apply, and recover
 
@@ -120,8 +138,9 @@ python3 tests/test-luci-backend.py
 
 The backend tests use in-memory files and fake service commands. They verify
 validation rejection, rollback, partial-write recovery, conflict detection,
-input restrictions, and DNS preservation. JavaScript tests cover configuration
-edits, RPC submission, read-only controls, and preservation of failed-save edits.
+input restrictions, streaming migration/toggling, and DNS preservation.
+JavaScript tests cover configuration edits, streaming templates/presets,
+RPC submission, read-only controls, and preservation of failed-save edits.
 These do not replace testing on your router's LuCI/rpcd build.
 
 On-router checks after installation:

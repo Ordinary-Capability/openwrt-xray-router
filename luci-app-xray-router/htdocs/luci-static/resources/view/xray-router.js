@@ -52,7 +52,7 @@ return view.extend({
 			if (Array.isArray(kind)) {
 				node = E('select', attrs, kind.map(function(pair) { return E('option', { 'value': pair[0] }, pair[1]); }));
 			} else if (kind === 'textarea') {
-				attrs.rows = key === 'primary' || key === 'backup' ? 16 : 5;
+				attrs.rows = key === 'primary' || key === 'backup' || key === 'stream' ? 16 : 5;
 				node = E('textarea', attrs);
 			} else { attrs.type = kind || 'text'; node = E('input', attrs); }
 			node.value = value == null ? '' : value;
@@ -88,8 +88,9 @@ return view.extend({
 			])]);
 		}
 		var values = model.read(state.config);
-		function outbound(key, title, tag) {
+		function outbound(key, title, tag, extra) {
 			return E('section', { 'class': 'cbi-section' }, [E('h3', {}, title),
+				extra || '',
 				E('p', {}, _('Paste an Xray outbound object or start from a template. Replace example addresses and credentials. Advanced transport fields are preserved.')),
 				field(key, _('Outbound JSON'), values[key], _('The outbound tag is kept automatically. Credentials are visible to users with access to this page.'), 'textarea'),
 				E('div', { 'class': 'cbi-page-actions' }, ['socks', 'vless', 'blackhole'].map(function(protocol) {
@@ -113,6 +114,19 @@ return view.extend({
 				E('p', {}, _('Service controls use the saved configuration. Unsaved form edits are applied only by Save & Apply.'))]),
 			outbound('primary', _('Primary outbound'), 'proxy-main'),
 			outbound('backup', _('Backup outbound'), 'proxy-backup'),
+			outbound('stream', _('Streaming outbound'), 'proxy-stream', E('div', {}, [
+				field('stream_enabled', _('Streaming routing'), values.stream_enabled,
+					_('Disabling keeps the node and domain list for later use.'), [['0', _('Disabled')], ['1', _('Enabled')]]),
+				field('stream_domains', _('Streaming domains'), values.stream_domains,
+					_('One domain per line. Supports domain:, full:, and geosite: groups. Bare domains include subdomains.'), 'textarea'),
+				button(_('Add streaming service presets'), function() {
+					fields.stream_domains.value = model.streamingPreset(fields.stream_domains.value);
+					dirty = true; updateButtons();
+				}),
+				E('p', {}, _('Adds Netflix, Prime Video, HBO/Max, and Disney+ while keeping custom entries. Remove a group to exclude that service. The installed GeoSite database must contain the selected groups.')),
+				E('p', {}, _('Matching connections use this node without fallback. Force-direct rules take priority. Disable CN IPv4 fast path below if CN destinations must use this node too.')),
+				E('p', {}, _('Global DNS still uses the primary node. A streaming node in a different region may need matching DNS routing.'))
+			])),
 			E('section', { 'class': 'cbi-section' }, [E('h3', {}, _('Health checks')),
 				field('probe_url', _('Probe URL'), values.probe_url, _('Use a reliable HTTP(S) endpoint reachable through the primary.')),
 				field('probe_interval', _('Probe interval (seconds)'), values.probe_interval, _('1–3600 seconds. Switching affects new connections after a health check completes.'), 'number'),

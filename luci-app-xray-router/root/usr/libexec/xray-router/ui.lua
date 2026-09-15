@@ -1,6 +1,8 @@
 -- XRAY_ROUTER_PROJECT: LuCI backend. Dependencies are injected for isolated tests.
 local M = {}
 local files = { "config.json", "settings.conf" }
+local stream_disabled_tag = "xray-router-stream-disabled"
+local stream_placeholder = "domain:example-stream.invalid"
 local function check(ok, message) if not ok then error(message, 0) end end
 local function equal(a, b)
     if type(a) ~= type(b) then return false end
@@ -9,7 +11,7 @@ local function equal(a, b)
     for k in pairs(b) do if a[k] == nil then return false end end
     return true
 end
-local function named(list, key, value)
+local function optional(list, key, value)
     local found
     for _, item in ipairs(list or {}) do
         if item[key] == value then
@@ -17,8 +19,40 @@ local function named(list, key, value)
             found = item
         end
     end
+    return found
+end
+local function named(list, key, value)
+    local found = optional(list, key, value)
     check(found, "Missing " .. value .. "; merge the current project configuration first")
     return found
+end
+local function ensure_streaming(config)
+    if not optional(config.outbounds, "tag", "proxy-stream") then
+        table.insert(config.outbounds, { tag = "proxy-stream", protocol = "blackhole",
+            settings = { response = { type = "none" } } })
+    end
+    if not optional(config.routing.rules, "ruleTag", "STREAMING-PROXY") then
+        local direct = named(config.routing.rules, "ruleTag", "FORCE-DIRECT")
+        for index, rule in ipairs(config.routing.rules) do
+            if rule == direct then
+                table.insert(config.routing.rules, index + 1, { type = "field",
+                    inboundTag = { "tproxy-in" }, domain = { stream_placeholder },
+                    outboundTag = "proxy-stream", ruleTag = "STREAMING-PROXY" })
+                break
+            end
+        end
+    end
+end
+local function valid_domains(domains)
+    check(type(domains) == "table" and #domains > 0, "Domain lists must not be empty")
+    local count = 0
+    for key, value in pairs(domains) do
+        count = count + 1
+        check(type(key) == "number" and key >= 1 and key <= #domains and key % 1 == 0,
+            "Domain list must be an array")
+        check(type(value) == "string" and value ~= "" and #value <= 512 and not value:find("[%c%s]"), "Invalid domain rule")
+    end
+    check(count == #domains, "Domain list must be an array")
 end
 
 function M.new(d)
@@ -79,8 +113,28 @@ function M.new(d)
     local function validate_edit(old_raw, raw)
         check(type(raw) == "string" and #raw <= 524288, "Configuration exceeds 512 KiB")
         local old, new = parse(old_raw), parse(raw)
-        -- Allow changes only to nodes, health probes and the two domain lists.
-        for _, tag in ipairs({ "proxy-main", "proxy-backup" }) do
+        -- Normalize only missing legacy streaming objects, then compare all other fields.
+        local stream = optional(new.outbounds, "tag", "proxy-stream")
+        local stream_rule = optional(new.routing.rules, "ruleTag", "STREAMING-PROXY")
+        local tags = { "proxy-main", "proxy-backup" }
+        if stream or stream_rule then
+            check(stream and stream_rule, "Streaming requires both an outbound and a routing rule")
+            ensure_streaming(old)
+            tags[#tags + 1] = "proxy-stream"
+            valid_domains(stream_rule.domain)
+            local enabled = equal(stream_rule.inboundTag, { "tproxy-in" })
+            check(enabled or equal(stream_rule.inboundTag, { stream_disabled_tag }), "Invalid streaming inbound scope")
+            check(not optional(new.inbounds, "tag", stream_disabled_tag), "Reserved streaming disable tag is used by an inbound")
+            -- The shipped inactive rule is accepted unchanged, including by older UI clients.
+            local empty = equal(stream_rule.domain, { stream_placeholder })
+            check(not enabled or empty or stream.protocol ~= "blackhole", "Configure the streaming node before enabling streaming routing")
+            local previous_rule = named(old.routing.rules, "ruleTag", "STREAMING-PROXY")
+            check(not enabled or not empty or equal(previous_rule, stream_rule), "Add at least one streaming domain or service preset")
+            previous_rule.domain = stream_rule.domain
+            previous_rule.inboundTag = stream_rule.inboundTag
+        end
+        -- Allow changes only to named nodes, health probes and exposed domain lists.
+        for _, tag in ipairs(tags) do
             local a = named(old.outbounds, "tag", tag)
             local b = named(new.outbounds, "tag", tag)
             check(type(b.protocol) == "string" and b.protocol ~= "", "Missing outbound protocol")
@@ -98,13 +152,10 @@ function M.new(d)
         for _, tag in ipairs({ "FORCE-DIRECT", "FORCE-PROXY" }) do
             local a = named(old.routing.rules, "ruleTag", tag)
             local b = named(new.routing.rules, "ruleTag", tag)
-            check(type(b.domain) == "table" and #b.domain > 0, "Domain lists must not be empty")
-            for _, value in ipairs(b.domain) do
-                check(type(value) == "string" and #value <= 512 and not value:find("[%c%s]"), "Invalid domain rule")
-            end
+            valid_domains(b.domain)
             a.domain = b.domain
         end
-        check(equal(old, new), "Only outbounds, probe URL/interval and force-domain lists can be edited here; DNS and other routing must stay unchanged")
+        check(equal(old, new), "Only named outbounds, probe URL/interval, domain lists and streaming enablement can be edited here; DNS and other routing must stay unchanged")
     end
     local function snapshot()
         local out = {}

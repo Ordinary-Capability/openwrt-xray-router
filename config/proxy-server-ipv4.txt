@@ -1,5 +1,5 @@
 # Optional literal IPv4 addresses of proxy servers, one address/CIDR per line.
-# Include endpoints for both proxy-main and proxy-backup.
+# Include endpoints for proxy-main, proxy-backup, and an enabled proxy-stream.
 # They bypass LAN interception. Router-originated Xray sockets are not intercepted
 # in this project's LAN-only design, so this list is mainly defensive/future-proof.
 #

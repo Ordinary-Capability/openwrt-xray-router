@@ -15,8 +15,9 @@ done
 
 if command -v jq >/dev/null 2>&1; then
     jq empty "$ROOT/config/config.json"
-    jq empty "$ROOT/examples/outbound-vless-reality-xray-26.json"
-    jq empty "$ROOT/examples/outbound-socks5.json"
+    for example in "$ROOT"/examples/*.json; do
+        jq empty "$example"
+    done
 fi
 
 XRAY_ROUTER_CONF_DIR="$ROOT/config" sh "$ROOT/src/policy.sh" render "$TEMP" >/dev/null

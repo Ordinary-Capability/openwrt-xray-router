@@ -1,0 +1,26 @@
+{
+  "tag": "proxy-stream",
+  "protocol": "vless",
+  "settings": {
+    "address": "198.51.100.20",
+    "port": 443,
+    "id": "00000000-0000-0000-0000-000000000001",
+    "encryption": "none",
+    "flow": "xtls-rprx-vision"
+  },
+  "streamSettings": {
+    "method": "raw",
+    "security": "reality",
+    "realitySettings": {
+      "serverName": "www.example.com",
+      "fingerprint": "chrome",
+      "password": "REPLACE_WITH_SERVER_PUBLIC_KEY",
+      "shortId": "0123456789abcdef",
+      "spiderX": "/"
+    },
+    "sockopt": {
+      "mark": 2,
+      "domainStrategy": "UseIPv4"
+    }
+  }
+}
