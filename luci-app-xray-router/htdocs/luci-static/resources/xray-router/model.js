@@ -15,6 +15,18 @@ function find(items, key, value) {
 		throw new Error('Expected one ' + value + '. Merge the current project configuration first.');
 	return match;
 }
+function streamingInbounds(config) {
+	return ['tproxy-in'].concat((config.inbounds || []).filter(function(inbound) {
+		return inbound.tag && inbound.tag !== 'tproxy-in' && inbound.tag !== streamDisabledTag &&
+			(inbound.protocol === 'socks' || inbound.protocol === 'http');
+	}).map(function(inbound) { return inbound.tag; }));
+}
+function streamingScope(config, tags) {
+	var allowed = streamingInbounds(config);
+	return Array.isArray(tags) && tags.indexOf('tproxy-in') >= 0 && tags.every(function(tag, index) {
+		return allowed.indexOf(tag) >= 0 && tags.indexOf(tag) === index;
+	});
+}
 function ensureStreaming(config) {
 	if (!optional(config.outbounds, 'tag', 'proxy-stream'))
 		config.outbounds.push({ tag: 'proxy-stream', protocol: 'blackhole', settings: { response: { type: 'none' } } });
@@ -50,7 +62,7 @@ return baseclass.extend({
 			primary: JSON.stringify(find(config.outbounds, 'tag', 'proxy-main'), null, 2),
 			backup: JSON.stringify(find(config.outbounds, 'tag', 'proxy-backup'), null, 2),
 			stream: JSON.stringify(find(config.outbounds, 'tag', 'proxy-stream'), null, 2),
-			stream_enabled: !empty && JSON.stringify(stream.inboundTag) === '["tproxy-in"]' ? '1' : '0',
+			stream_enabled: !empty && streamingScope(config, stream.inboundTag) ? '1' : '0',
 			stream_domains: empty ? '' : stream.domain.join('\n'),
 			probe_url: config.observatory.probeUrl,
 			probe_interval: seconds,
@@ -83,7 +95,9 @@ return baseclass.extend({
 		}
 		if (optional(config.inbounds, 'tag', streamDisabledTag))
 			throw new Error('The reserved streaming disable tag is already used by an inbound.');
-		streamRule.inboundTag = [values.stream_enabled === '1' ? 'tproxy-in' : streamDisabledTag];
+		// Preserve an active scope on ordinary saves; re-enable all configured proxy listeners.
+		streamRule.inboundTag = values.stream_enabled === '0' ? [streamDisabledTag] :
+			streamingScope(config, streamRule.inboundTag) ? streamRule.inboundTag : streamingInbounds(config);
 		var interval = Number(values.probe_interval);
 		if (!Number.isInteger(interval) || interval < 1 || interval > 3600)
 			throw new Error('Probe interval must be 1–3600 seconds.');

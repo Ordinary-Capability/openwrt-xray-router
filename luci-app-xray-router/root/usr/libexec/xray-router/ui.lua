@@ -26,6 +26,20 @@ local function named(list, key, value)
     check(found, "Missing " .. value .. "; merge the current project configuration first")
     return found
 end
+local function streaming_scope(config, tags)
+    if type(tags) ~= "table" or #tags == 0 then return false end
+    local seen, count = {}, 0
+    for key, tag in pairs(tags) do
+        if type(key) ~= "number" or key < 1 or key > #tags or key % 1 ~= 0 or
+            type(tag) ~= "string" or seen[tag] or tag == stream_disabled_tag then return false end
+        if tag ~= "tproxy-in" then
+            local inbound = optional(config.inbounds, "tag", tag)
+            if not inbound or (inbound.protocol ~= "socks" and inbound.protocol ~= "http") then return false end
+        end
+        seen[tag], count = true, count + 1
+    end
+    return seen["tproxy-in"] and count == #tags
+end
 local function ensure_streaming(config)
     if not optional(config.outbounds, "tag", "proxy-stream") then
         table.insert(config.outbounds, { tag = "proxy-stream", protocol = "blackhole",
@@ -122,7 +136,7 @@ function M.new(d)
             ensure_streaming(old)
             tags[#tags + 1] = "proxy-stream"
             valid_domains(stream_rule.domain)
-            local enabled = equal(stream_rule.inboundTag, { "tproxy-in" })
+            local enabled = streaming_scope(old, stream_rule.inboundTag)
             check(enabled or equal(stream_rule.inboundTag, { stream_disabled_tag }), "Invalid streaming inbound scope")
             check(not optional(new.inbounds, "tag", stream_disabled_tag), "Reserved streaming disable tag is used by an inbound")
             -- The shipped inactive rule is accepted unchanged, including by older UI clients.

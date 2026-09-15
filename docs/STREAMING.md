@@ -124,9 +124,15 @@ The node credentials and domain list remain saved. Re-enabling restores the
 same domain selection. This switch affects the streaming domain rule; custom
 IP rules targeting `proxy-stream` remain independently active.
 
+The UI recognizes enabled streaming rules covering `tproxy-in` plus configured
+SOCKS/HTTP inbound tags, and preserves that scope on ordinary saves. When
+re-enabling a disabled rule, it includes `tproxy-in` and the configured SOCKS/HTTP
+listeners. DNS inbounds are not added.
+
 For SSH administration, the disabled rule uses
 `"inboundTag": ["xray-router-stream-disabled"]`; that tag is reserved and must
-not be assigned to an inbound. Enabling restores `["tproxy-in"]`. Domains stay
+not be assigned to an inbound. Without SOCKS/HTTP listeners, enabling restores
+`["tproxy-in"]`. Domains stay
 in the rule and Xray still validates their GeoSite references while disabled.
 The original `["domain:example-stream.invalid"]` domain placeholder is also
 recognized as inactive. Keep domain lists nonempty in saved JSON.

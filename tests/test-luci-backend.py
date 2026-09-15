@@ -203,6 +203,32 @@ class BackendTest(unittest.TestCase):
         request.update(config=json.dumps(enabled), revision=self.revision())
         self.assertTrue(self.call(request)[0])
 
+    def test_streaming_multiple_proxy_inbounds_save_and_toggle(self):
+        config = json.loads(self.streaming_request()['config'])
+        config['inbounds'].extend([{'tag': 'socks-in', 'protocol': 'socks', 'port': 10808},
+                                  {'tag': 'http-in', 'protocol': 'http', 'port': 10809}])
+        rule = next(r for r in config['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')
+        scope = ['tproxy-in', 'socks-in', 'http-in']
+        rule['inboundTag'] = scope
+        self.fs[self.conf + '/config.json'] = json.dumps(config)
+        self.original = self.snapshot()
+        request = self.request()
+        for tags in (scope, ['xray-router-stream-disabled'], scope):
+            rule['inboundTag'] = tags
+            request.update(config=json.dumps(config), revision=self.revision())
+            ok, result = self.call(request)
+            self.assertTrue(ok, result)
+            self.assertEqual(result['code'], 0)
+            saved = json.loads(self.fs[self.conf + '/config.json'])
+            self.assertEqual(saved['inbounds'], config['inbounds'])
+            self.assertEqual(saved['dns'], config['dns'])
+        for tags in (['tproxy-in', 'dns-in'], ['tproxy-in', 'dns-global'],
+                     ['tproxy-in', 'unknown'], ['tproxy-in', 'socks-in', 'socks-in'],
+                     ['socks-in'], ['tproxy-in', 'xray-router-stream-disabled']):
+            rule['inboundTag'] = tags
+            request.update(config=json.dumps(config), revision=self.revision())
+            self.assertFalse(self.call(request)[0], tags)
+
     def test_streaming_upgrade_from_config_without_streaming(self):
         legacy = json.loads(self.original['config.json'])
         legacy['outbounds'] = [o for o in legacy['outbounds'] if o['tag'] != 'proxy-stream']
