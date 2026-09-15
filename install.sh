@@ -6,12 +6,20 @@ set -eu
 PROJECT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 CONF_DIR="/etc/xray-router"
 LIBEXEC_DIR="/usr/libexec/xray-router"
+WITH_LUCI=0
+case "${1:-}" in
+    '') ;;
+    --with-luci) WITH_LUCI=1 ;;
+    *) printf '%s\n' "Usage: $0 [--with-luci]" >&2; exit 2 ;;
+esac
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
 [ "$(id -u)" = "0" ] || die "run this installer as root"
 [ -r /etc/openwrt_release ] || die "this installer targets OpenWrt"
+[ ! -d /tmp/xray-router-ui/lock ] || die "wait for the LuCI management operation to finish before installing"
+[ "$WITH_LUCI" -eq 0 ] || sh "$PROJECT_DIR/scripts/install-luci.sh" --check
 
 for cmd in xray fw4 nft ip uci jsonfilter; do
     command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
@@ -36,3 +44,4 @@ chmod 0644 "$CONF_DIR/settings.conf" "$CONF_DIR/cn-ipv4.txt" \
 
 say "Installed xray-router project files. No service was started and dnsmasq was not changed."
 say "Next: edit $CONF_DIR/config.json, then run: xrayctl doctor && xrayctl validate"
+[ "$WITH_LUCI" -eq 0 ] || sh "$PROJECT_DIR/scripts/install-luci.sh"

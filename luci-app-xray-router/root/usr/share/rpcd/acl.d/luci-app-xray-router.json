@@ -1,0 +1,7 @@
+{
+  "luci-app-xray-router": {
+    "description": "Read Xray Router status and configuration including proxy credentials; manage the stack with write access",
+    "read": { "ubus": { "luci.xray-router": ["get", "status", "job", "diagnostics"] } },
+    "write": { "ubus": { "luci.xray-router": ["start"] } }
+  }
+}

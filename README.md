@@ -330,6 +330,15 @@ xrayctl update-cn
 
 Run `xrayctl help` for the complete command list.
 
+### Optional web management
+
+Install the LuCI dependencies and run `sh install.sh --with-luci` to add
+**Services → Xray Router**. The page provides service/boot controls, primary
+and backup outbound editors with templates, health checks, routing settings,
+diagnostics, and validated Save & Apply with rollback. DNS routing stays as
+configured. See [LuCI installation and recovery](docs/LUCI.md) for the complete
+instructions and test coverage.
+
 `xrayctl stop` restores the saved pre-project dnsmasq file before stopping Xray
 and removing interception. Because restoration is a full-file restore, do not
 make unrelated `/etc/config/dhcp` edits while this stack is active. If you want

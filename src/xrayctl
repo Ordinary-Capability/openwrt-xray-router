@@ -184,7 +184,11 @@ restart_stack() {
         "$INIT_SCRIPT" stop >/dev/null 2>&1 || true
         die "restart failed; inspect: xrayctl logs"
     fi
-    [ "$MANAGE_DNSMASQ" = "1" ] && dnsmasq_apply || true
+    if [ "$MANAGE_DNSMASQ" = "1" ] && ! dnsmasq_apply; then
+        "$INIT_SCRIPT" stop >/dev/null 2>&1 || true
+        dnsmasq_restore >/dev/null 2>&1 || warn "could not restore dnsmasq after restart failure"
+        die "dnsmasq setup failed after restart; xray-router was stopped"
+    fi
     say "xray-router stack restarted"
 }
 
