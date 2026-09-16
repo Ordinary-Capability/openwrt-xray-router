@@ -1,7 +1,7 @@
 # Traffic Inspector
 
-The LuCI **Services → Xray Traffic Inspector** page diagnoses traffic from one
-LAN IPv4 address. It collects actual Xray route/access records and sampled
+The **Inspector** tab under **Services → Xray Router** diagnoses traffic from
+one LAN IPv4 address. It collects actual Xray route/access records and sampled
 nftables trace events. Starting, stopping, or timing out a capture never edits
 the Xray configuration, restarts Xray, or reloads the firewall.
 
@@ -13,8 +13,7 @@ inspector uses the existing Lua/jsonc/nixio packages, `logread`, and an `nft`
 build supporting JSON output and `monitor trace`. No tcpdump or gRPC client is
 required. The OpenWrt SDK package includes the new files automatically.
 
-1. Open **Services → Xray Traffic Inspector**, or follow **Traffic Inspector**
-   from the Xray Router page.
+1. Open **Services → Xray Router → Inspector**.
 2. Select a DHCP/ARP device suggestion or type its IPv4 address. Choose an
    expected path if you want mismatches highlighted: Direct, Normal proxy
    (primary or backup), Streaming, Primary only, or Backup only.
@@ -25,7 +24,7 @@ required. The OpenWrt SDK package includes the new files automatically.
 4. Filter by IP, domain, path, or rule, or select **Only unexpected paths or
    errors**. Open **Details** for the evidence behind a row. A known hostname
    provides an exact `full:` entry you can copy into the appropriate routing
-   list on the Xray Router page.
+   list in the **Routing** tab. Switching tabs retains the capture and form edits.
 5. Click **Stop / clean up**, or allow the capture to expire. **Download
    report** exports the displayed capture as JSON, including device/domain
    metadata and raw evidence. Review it before sharing.
@@ -101,6 +100,8 @@ second with a burst of 10. This is packet sampling, not a complete flow record.
 The tracing source is a timed nftables set element. It expires within the
 chosen duration after installation even if the collector is killed. A
 finished capture removes only the table carrying its exact ownership token.
+On nft 1.0.2, which omits table comments from JSON, cleanup verifies the
+table's leading comment in text output instead; nested comments do not count.
 The worker terminates its own `nft monitor trace` and `logread` helpers on
 normal exit. A failed cleanup is reported and retains the capture lock for
 **Stop / clean up** recovery. Read-only requests never remove tables.

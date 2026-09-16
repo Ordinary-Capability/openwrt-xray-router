@@ -19,13 +19,13 @@ local function state() return json.parse(read(work .. "/state") or "{}") or {} e
 local function mkdir()
     local info = fs.lstat(work)
     if info then assert(info.type == "dir" and info.uid == 0, "Unsafe capture directory")
-    else assert(fs.mkdir(work, 448), "Cannot create capture directory") end
-    assert(fs.chmod(work, 448), "Cannot protect capture directory")
+    else assert(fs.mkdir(work, "700"), "Cannot create capture directory") end
+    assert(fs.chmod(work, "700"), "Cannot protect capture directory")
 end
 local function atomic(path, data)
     local temporary = path .. ".new"
     fs.unlink(temporary)
-    local fd = assert(nixio.open(temporary, "w", 384), "Cannot write capture state")
+    local fd = assert(nixio.open(temporary, "w", "600"), "Cannot write capture state")
     local ok = fd:writeall(data)
     fd:close()
     assert(ok and fs.rename(temporary, path), "Cannot replace capture state")
@@ -35,7 +35,7 @@ local function save(value) atomic(work .. "/state", json.stringify(value)) end
 -- in place: unlinking a locked inode would allow a second independent lock.
 local function control(callback, wait)
     mkdir()
-    local fd = assert(nixio.open(work .. "/control", "w", 384), "Cannot open capture control lock")
+    local fd = assert(nixio.open(work .. "/control", "w", "600"), "Cannot open capture control lock")
     local locked = fd:lock(wait and "lock" or "tlock")
     if not locked then fd:close(); error("Capture control is busy; retry shortly") end
     local ok, result = pcall(callback)
@@ -120,10 +120,19 @@ local function cleanup(token)
         end
         return true
     end
-    local data, owned = json.parse(output), false
+    local data, owned, missing_comment = json.parse(output), false, false
     for _, item in ipairs(data and data.nftables or {}) do
-        if item.table and item.table.name == table_name and item.table.family == "inet"
-            and item.table.comment == "XRAY_ROUTER_INSPECTOR:" .. tostring(token) then owned = true end
+        if item.table and item.table.name == table_name and item.table.family == "inet" then
+            owned = item.table.comment == "XRAY_ROUTER_INSPECTOR:" .. tostring(token)
+            missing_comment = item.table.comment == nil
+        end
+    end
+    -- nft 1.0.2 omits table comments from JSON. Only accept the table's own
+    -- leading comment in text output, never a comment on a nested rule/set.
+    if not owned and missing_comment then
+        local listed, text = command({ "nft", "list", "table", "inet", table_name })
+        local comment = listed == 0 and text:match('^%s*table inet xray_router_inspect%s*{%s*comment "([^"]+)"')
+        owned = comment == "XRAY_ROUTER_INSPECTOR:" .. tostring(token)
     end
     if not owned then return false, "Refusing to remove an unrelated capture table" end
     local removed, message = command({ "nft", "delete", "table", "inet", table_name })
@@ -176,14 +185,14 @@ local function start(request)
     assert(not alive(previous), "A capture is already running")
     -- Atomic acquisition; give a new locker time to publish its state before
     -- considering recovery. Never remove another caller's newly acquired lock.
-    if not fs.mkdir(work .. "/lock", 448) then
+    if not fs.mkdir(work .. "/lock", "700") then
         previous = state()
         local lock = fs.stat(work .. "/lock")
         assert(lock and now() - lock.mtime > 10 and previous.id and not alive(previous), "Capture startup is already in progress")
         local cleaned, message = cleanup(previous.id)
         assert(cleaned, message)
         assert(fs.rmdir(work .. "/lock"), "Cannot clear stale capture lock")
-        assert(fs.mkdir(work .. "/lock", 448), "A capture is already starting")
+        assert(fs.mkdir(work .. "/lock", "700"), "A capture is already starting")
     end
     local token = tostring(nixio.getpid()) .. "-" .. string.format("%.0f", now() * 1000000)
     local value = { id = token, active = true, started = now(), device = selected.device,

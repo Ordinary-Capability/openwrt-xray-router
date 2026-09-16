@@ -30,6 +30,7 @@ class BackendTest(unittest.TestCase):
             'atomic': self.atomic, 'running': lambda: self.running,
             'enabled': lambda: False, 'revision': lambda _: self.revision(),
             'capture_active': lambda: self.capture_running,
+            'test_node': self.run_node_test,
             'run': self.run_command,
             'json': self.lua.table_from({'parse': self.parse, 'stringify': lambda data: json.dumps(self.from_lua(data))})})
         self.backend = self.lua.execute(BACKEND.read_text(encoding='utf-8')).new(deps)
@@ -62,7 +63,7 @@ class BackendTest(unittest.TestCase):
 
     def snapshot(self):
         return {name: self.fs[self.conf + '/' + name]
-                for name in ('config.json', 'settings.conf')}
+                for name in ('config.json', 'settings.conf', 'nodes.json') if self.conf + '/' + name in self.fs}
 
     def atomic(self, path, value):
         if self.write_failure == path:
@@ -83,6 +84,28 @@ class BackendTest(unittest.TestCase):
             self.restart_failures -= 1
             return 1, 'restart failed'
         return 0, action + ' succeeded'
+
+    def run_node_test(self, outbound):
+        self.calls.append(('test-node', self.from_lua(outbound)))
+        return self.table({'code': 0, 'output': 'Connected', 'node_test': {'success': True, 'latency_ms': 123}})
+
+    def test_node_uses_draft_without_changing_live_files(self):
+        outbound = {'protocol': 'socks', 'settings': {'address': '192.0.2.20', 'port': 1080}}
+        self.running = True
+        self.capture_running = True
+        ok, result = self.call({'action': 'test-node', 'config': json.dumps(outbound)})
+        self.assertTrue(ok, result)
+        self.assertEqual(result['code'], 0)
+        self.assertTrue(result['node_test']['success'])
+        self.assertEqual(self.calls, [('test-node', outbound)])
+        self.assertEqual(self.snapshot(), self.original)
+
+    def test_node_rejects_invalid_payload_before_launch(self):
+        for payload in ['[]', '{}', '{bad', json.dumps({'protocol': 'socks', 'tag': 'live'}), ' ' * 262145]:
+            ok, result = self.call({'action': 'test-node', 'config': payload})
+            self.assertFalse(ok, result)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.snapshot(), self.original)
 
     def request(self):
         config = json.loads(self.original['config.json'])
@@ -215,8 +238,6 @@ class BackendTest(unittest.TestCase):
 
     def test_streaming_multiple_proxy_inbounds_save_and_toggle(self):
         config = json.loads(self.streaming_request()['config'])
-        config['inbounds'].extend([{'tag': 'socks-in', 'protocol': 'socks', 'port': 10808},
-                                  {'tag': 'http-in', 'protocol': 'http', 'port': 10809}])
         rule = next(r for r in config['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')
         scope = ['tproxy-in', 'socks-in', 'http-in']
         rule['inboundTag'] = scope
@@ -315,6 +336,17 @@ class BackendTest(unittest.TestCase):
         self.assertFalse(self.call({'action': 'stop; reboot'})[0])
         self.assertFalse(self.calls)
 
+    def test_cn_update_dispatches_existing_command_and_obeys_recovery_lock(self):
+        ok, result = self.call({'action': 'update-cn'})
+        self.assertTrue(ok)
+        self.assertEqual(result['code'], 0)
+        self.assertEqual(self.calls, [('update-cn', None)])
+        self.assertEqual(self.snapshot(), self.original)
+        self.assertFalse(self.call({'action': 'update-cn; reboot'})[0])
+        self.fs[self.conf + '/backups/luci-pending'] = 'interrupted'
+        self.assertFalse(self.call({'action': 'update-cn'})[0])
+        self.assertEqual(self.calls, [('update-cn', None)])
+
     def test_logging_action_changes_only_level_and_stopped_service_stays_stopped(self):
         ok, result = self.call({'action': 'logging-info', 'revision': self.revision()})
         self.assertTrue(ok, result)
@@ -333,7 +365,7 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(result['code'], 1)
         self.assertEqual(self.snapshot(), self.original)
         self.capture_running = True
-        for action in ['logging-info', 'logging-warning', 'restart', 'firewall-reload', 'rollback']:
+        for action in ['logging-info', 'logging-warning', 'restart', 'firewall-reload', 'rollback', 'update-cn']:
             self.assertFalse(self.call({'action': action, 'revision': self.revision()})[0])
         self.assertFalse(self.call(self.request())[0])
         self.assertTrue(self.call({'action': 'stop'})[0], 'emergency service stop must stay available')
@@ -356,6 +388,158 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(result['code'], 0)
         self.assertEqual(self.snapshot(), self.original)
         self.assertNotIn(self.conf + '/backups/luci-pending', self.fs)
+
+    def seed_host_node(self):
+        config = json.loads(self.fs[self.conf + '/config.json'])
+        primary = next(o for o in config['outbounds'] if o['tag'] == 'proxy-main')
+        primary.update(protocol='socks', settings={'address': '192.168.80.1', 'port': 50777},
+                       streamSettings={'sockopt': {'mark': 2}})
+        self.fs[self.conf + '/config.json'] = json.dumps(config)
+        self.original = self.snapshot()
+
+    def library_request(self):
+        state = self.backend.get()
+        return {'action': 'save', 'config': state['config'], 'revision': state['revision'],
+                'settings': self.from_lua(state['settings']), 'nodes': state['nodes']}
+
+    def test_library_migration_is_read_only_and_preserves_outbound(self):
+        self.seed_host_node()
+        state = self.backend.get()
+        library = json.loads(state['nodes'])
+        self.assertEqual(self.snapshot(), self.original)
+        self.assertFalse(self.calls)
+        self.assertEqual(library['bindings']['proxy-main'], 'node-proxy-main')
+        self.assertEqual(library['bindings']['proxy-backup'], '')
+        node = library['nodes']['node-proxy-main']
+        self.assertEqual(node['alias'], 'host-socks')
+        self.assertNotIn('tag', node['outbound'])
+        self.assertEqual(node['outbound']['streamSettings']['sockopt']['mark'], 2)
+
+    def test_library_only_save_and_rename_do_not_restart_or_rewrite_runtime(self):
+        self.seed_host_node()
+        self.running = True
+        request = self.library_request()
+        library = json.loads(request['nodes'])
+        library['nodes']['node-proxy-main']['alias'] = 'us-vps'
+        library['nodes']['node-unused'] = {'alias': 'jp-vps', 'outbound': {'protocol': 'socks', 'settings': {'address': '192.0.2.20', 'port': 1080}}}
+        request['nodes'] = json.dumps(library)
+        ok, result = self.call(request)
+        self.assertTrue(ok, result)
+        self.assertEqual(result['code'], 0)
+        self.assertIn('no restart', result['output'])
+        self.assertFalse(self.calls)
+        for name, content in self.original.items():
+            self.assertEqual(self.fs[self.conf + '/' + name], content)
+        self.assertEqual(json.loads(self.fs[self.conf + '/nodes.json']), library)
+        self.assertNotEqual(self.revision(), request['revision'])
+
+    def test_shared_node_assignment_keeps_routing_and_sets_each_tag(self):
+        self.seed_host_node()
+        self.running = True
+        request = self.library_request()
+        library = json.loads(request['nodes'])
+        config = json.loads(request['config'])
+        for tag in ('proxy-backup', 'proxy-stream'):
+            library['bindings'][tag] = 'node-proxy-main'
+            index = next(i for i, o in enumerate(config['outbounds']) if o['tag'] == tag)
+            config['outbounds'][index] = dict(library['nodes']['node-proxy-main']['outbound'], tag=tag)
+        request.update(config=json.dumps(config), nodes=json.dumps(library))
+        ok, result = self.call(request)
+        self.assertTrue(ok, result)
+        self.assertEqual(result['code'], 0)
+        self.assertEqual([c[0] for c in self.calls], ['validate', 'restart'])
+        saved = json.loads(self.fs[self.conf + '/config.json'])
+        self.assertEqual(saved['routing'], json.loads(self.original['config.json'])['routing'])
+        self.assertEqual(saved['inbounds'], json.loads(self.original['config.json'])['inbounds'])
+
+    def test_bad_library_and_mismatched_materialization_are_rejected(self):
+        self.seed_host_node()
+        mutations = [
+            lambda lib: lib['bindings'].update({'proxy-main': 'node-missing'}),
+            lambda lib: lib['bindings'].update({'direct': 'node-proxy-main'}),
+            lambda lib: lib['nodes']['node-proxy-main']['outbound'].update(tag='arbitrary'),
+            lambda lib: lib['nodes']['node-proxy-main']['outbound']['settings'].update(port=9999),
+            lambda lib: lib['nodes'].update({'node-copy': dict(lib['nodes']['node-proxy-main'])}),
+            lambda lib: lib['nodes']['node-proxy-main'].update(alias=' invalid '),
+            lambda lib: lib['nodes'].pop('node-proxy-main'),
+            lambda lib: lib.update(version=2),
+        ]
+        for mutate in mutations:
+            request = self.library_request()
+            library = json.loads(request['nodes'])
+            mutate(library)
+            request['nodes'] = json.dumps(library)
+            self.assertFalse(self.call(request)[0])
+        self.assertEqual(self.snapshot(), self.original)
+        self.assertFalse(self.calls)
+
+    def test_library_partial_write_failure_restores_absent_file_without_restart(self):
+        self.seed_host_node()
+        self.running = True
+        self.write_failure = self.conf + '/nodes.json'
+        ok, result = self.call(self.library_request())
+        self.assertTrue(ok)
+        self.assertEqual(result['code'], 1)
+        self.assertEqual(self.snapshot(), self.original)
+        self.assertNotIn(self.conf + '/nodes.json', self.fs)
+        self.assertFalse(self.calls)
+
+    def test_library_and_runtime_recover_together_after_failed_restart(self):
+        self.seed_host_node()
+        self.assertEqual(self.call(self.library_request())[1]['code'], 0)
+        before = self.snapshot()
+        request = self.library_request()
+        library, config = json.loads(request['nodes']), json.loads(request['config'])
+        library['nodes']['node-proxy-main']['outbound']['settings']['port'] = 50888
+        next(o for o in config['outbounds'] if o['tag'] == 'proxy-main')['settings']['port'] = 50888
+        request.update(nodes=json.dumps(library), config=json.dumps(config))
+        self.running = True
+        self.restart_failures = 1
+        ok, result = self.call(request)
+        self.assertTrue(ok)
+        self.assertEqual(result['code'], 1)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual([c[0] for c in self.calls], ['validate', 'restart', 'restart'])
+
+    def test_metadata_rollback_and_old_backups_without_library(self):
+        self.seed_host_node()
+        before = self.snapshot()
+        self.assertEqual(self.call(self.library_request())[1]['code'], 0)
+        self.running = True
+        ok, result = self.call({'action': 'rollback', 'revision': self.revision()})
+        self.assertTrue(ok)
+        self.assertEqual(result['code'], 0)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.calls)
+
+    def test_library_conflict_detection_and_external_outbound_import(self):
+        self.seed_host_node()
+        self.assertEqual(self.call(self.library_request())[1]['code'], 0)
+        request = self.library_request()
+        library = json.loads(request['nodes'])
+        library['nodes']['node-proxy-main']['alias'] = 'renamed-elsewhere'
+        self.fs[self.conf + '/nodes.json'] = json.dumps(library)
+        self.assertFalse(self.call(request)[0], 'metadata-only writes must check the library revision')
+        config = json.loads(self.fs[self.conf + '/config.json'])
+        next(o for o in config['outbounds'] if o['tag'] == 'proxy-main')['settings']['port'] = 50888
+        self.fs[self.conf + '/config.json'] = json.dumps(config)
+        before = self.snapshot()
+        state = self.backend.get()
+        imported = json.loads(state['nodes'])
+        self.assertIn('outside', state['nodes_notice'])
+        self.assertEqual(len(imported['nodes']), 2)
+        current = imported['nodes'][imported['bindings']['proxy-main']]
+        self.assertEqual(current['outbound']['settings']['port'], 50888)
+        self.assertEqual(self.snapshot(), before, 'get must not persist imported changes')
+
+    def test_logging_preserves_the_library(self):
+        self.seed_host_node()
+        self.assertEqual(self.call(self.library_request())[1]['code'], 0)
+        before = self.fs[self.conf + '/nodes.json']
+        ok, result = self.call({'action': 'logging-info', 'revision': self.revision()})
+        self.assertTrue(ok)
+        self.assertEqual(result['code'], 0)
+        self.assertEqual(self.fs[self.conf + '/nodes.json'], before)
 
 
 class RPCContractTest(unittest.TestCase):
@@ -385,12 +569,16 @@ class RPCContractTest(unittest.TestCase):
             package.preload['luci.jsonc'] = function() return { parse=py_parse, stringify=py_encode } end
             package.preload['nixio.fs'] = function() return {
                 readfile=py_read, unlink=py_unlink, rename=py_rename, mkdir=py_mkdir,
-                rmdir=py_rmdir, stat=py_stat, lstat=py_stat, chmod=function() return true end
+                rmdir=py_rmdir, stat=py_stat, lstat=py_stat,
+                chmod=function(_, mode) assert(mode == '700', 'nixio expects octal strings'); return true end
             } end
             package.preload['nixio'] = function() return {
                 getpid=function() return 4321 end, fork=function() return 4321 end,
+                gettimeofday=function() return 1700000000, 1234 end,
                 kill=function() return true end,
-                open=function(path) return {
+                open=function(path, flags, mode)
+                    assert(mode == '600', 'nixio expects octal strings')
+                    return {
                     writeall=function(_, data) return py_write(path, data) end,
                     sync=function() return true end, close=function() return true end
                 } end
@@ -419,7 +607,7 @@ class RPCContractTest(unittest.TestCase):
 
     def mkdir(self, path, mode):
         if path in self.dirs: return False
-        self.assertEqual(mode, 448)
+        self.assertEqual(mode, '700')
         self.dirs[path] = {'uid': 0, 'type': 'dir', 'mtime': 9999999999}
         return True
 
@@ -443,18 +631,24 @@ class RPCContractTest(unittest.TestCase):
         self.assertEqual(set(signatures), set(reads + writes))
         self.assertEqual(writes, ['start'])
         self.assertEqual(signatures['start']['settings'], {})
+        self.assertEqual(signatures['start']['nodes'], '')
 
     def test_queue_worker_and_progress_contract(self):
-        self.assertTrue(self.invoke('call', 'start', {'action': 'validate'})['busy'])
+        started = self.invoke('call', 'start', {'action': 'validate'})
+        self.assertTrue(started['busy'])
+        self.assertTrue(started['id'])
+        self.assertEqual(self.invoke('call', 'job')['id'], started['id'])
         self.assertIn('error', self.invoke('call', 'start', {'action': 'restart'}))
         self.invoke('worker')
         result = self.invoke('call', 'job')
         self.assertFalse(result['busy'])
         self.assertEqual(result['code'], 0)
         self.assertEqual(result['action'], 'validate')
+        self.assertEqual(result['id'], started['id'])
         self.assertEqual(result['output'], 'command output')
         self.assertTrue(any("/usr/sbin/xrayctl 'validate'" in c for c in self.commands))
         self.assertNotIn('/tmp/xray-router-ui/request', self.fs)
+        self.assertNotIn('/tmp/xray-router-ui/lock/id', self.fs)
 
     def test_read_only_rpc_cannot_run_service_action(self):
         result = self.invoke('call', 'diagnostics', {'action': 'restart'})

@@ -11,14 +11,17 @@ the project does not activate streaming rules for real domains.
 
 ## Configure and enable in LuCI
 
-Open **Services → Xray Router → Streaming outbound** after installing the
+Open **Services → Xray Router → Proxy Nodes** after installing the
 updated UI with `sh scripts/install-luci.sh` and signing into LuCI again.
 
-1. Choose **VLESS REALITY template** and fill in the actual server address,
+1. Click **Add node**, enter an alias such as `jp-vps`, choose **Insert VLESS
+   REALITY template**, and fill in the actual server address,
    port, UUID, server name, public key (`password` in this Xray syntax), and
    short ID in **Outbound JSON**. Existing advanced transport fields are
-   retained when editing a configured node. Prefer a literal server IP.
-2. Click **Add streaming service presets** for Netflix, Prime Video, HBO/Max,
+   retained when editing a configured node. Prefer a literal server IP. Click
+   **Use node** to keep it in the draft.
+2. Switch to **Routing** and select that node for `proxy-stream` under
+   **Outbound tags → configuration**. Click **Add streaming service presets** for Netflix, Prime Video, HBO/Max,
    and Disney+. The button adds missing groups without deleting custom
    domains. Edit **Streaming domains** to remove services or add others.
 3. Set **Streaming routing** to **Enabled**. If streaming destinations with

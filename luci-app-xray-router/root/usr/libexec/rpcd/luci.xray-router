@@ -10,13 +10,13 @@ local function mkdir(path)
     local info = fs.lstat(path)
     if info then
         assert(info.type == "dir" and info.uid == 0, "Unsafe directory " .. path)
-        assert(fs.chmod(path, 448), "Cannot protect " .. path)
-    else assert(fs.mkdir(path, 448), "Cannot create " .. path) end
+        assert(fs.chmod(path, "700"), "Cannot protect " .. path)
+    else assert(fs.mkdir(path, "700"), "Cannot create " .. path) end
 end
 local function atomic(path, text)
     local tmp = path .. ".new"
     fs.unlink(tmp)
-    local fd = assert(nixio.open(tmp, "w", 384), "Cannot write " .. tmp)
+    local fd = assert(nixio.open(tmp, "w", "600"), "Cannot write " .. tmp)
     local ok = fd:writeall(text)
     local synced = ok and fd:sync()
     fd:close()
@@ -37,8 +37,12 @@ local backend = dofile("/usr/libexec/xray-router/ui.lua").new({
     running = function() return test("/etc/init.d/xray-router running") end,
     enabled = function() return test("/etc/init.d/xray-router enabled") end,
     capture_active = function() return fs.stat("/tmp/xray-router-inspector/lock") ~= nil end,
+    test_node = function(outbound)
+        return dofile("/usr/libexec/xray-router/node-test.lua").run(outbound, work)
+    end,
     revision = function()
-        local code, value = command("sha256sum /etc/xray-router/config.json /etc/xray-router/settings.conf")
+        local code, value = command("sha256sum /etc/xray-router/config.json /etc/xray-router/settings.conf && " ..
+            "if [ -e /etc/xray-router/nodes.json ]; then sha256sum /etc/xray-router/nodes.json; else printf 'nodes.json:absent\\n'; fi")
         assert(code == 0, "Cannot fingerprint configuration")
         return value
     end,
@@ -50,15 +54,18 @@ local backend = dofile("/usr/libexec/xray-router/ui.lua").new({
 local function job()
     local raw = fs.readfile(work .. "/result")
     if fs.stat(lock) then
+        local id = fs.readfile(lock .. "/id")
         local pid = tonumber((fs.readfile(lock .. "/pid")))
-        if pid and nixio.kill(pid, 0) then return { busy = true } end
+        if pid and nixio.kill(pid, 0) then return { busy = true, id = id } end
         -- Allow the newly forked worker time to publish its PID.
         local stat = fs.stat(lock)
-        if stat and os.time() - stat.mtime < 10 then return { busy = true } end
+        if stat and os.time() - stat.mtime < 10 then return { busy = true, id = id } end
         fs.unlink(lock .. "/pid")
         fs.unlink(lock .. "/pid.new")
+        fs.unlink(lock .. "/id")
+        fs.unlink(lock .. "/id.new")
         fs.rmdir(lock)
-        return { busy = false, code = 1, output = "Management worker stopped unexpectedly. Reload configuration and check whether recovery is required." }
+        return { busy = false, id = id, code = 1, output = "Management worker stopped unexpectedly. Reload configuration and check whether recovery is required." }
     end
     return raw and json.parse(raw) or { busy = false }
 end
@@ -72,16 +79,22 @@ local function worker()
     result = ok and result or { code = 1, output = tostring(result) }
     result.busy = false
     result.action = request and request.action
+    result.id = request and request.job_id
     atomic(work .. "/result", json.stringify(result))
     fs.unlink(work .. "/request")
     fs.unlink(lock .. "/pid")
+    fs.unlink(lock .. "/id")
     fs.rmdir(lock)
 end
 local function start(request)
     mkdir(work)
     assert(not job().busy, "Another management operation is running")
-    assert(fs.mkdir(lock, 448), "Another management operation is running")
+    assert(fs.mkdir(lock, "700"), "Another management operation is running")
+    local seconds, micros = nixio.gettimeofday()
+    local id = nixio.getpid() .. "-" .. seconds .. "-" .. (micros or 0)
     local ok, err = pcall(function()
+        request.job_id = id
+        atomic(lock .. "/id", id)
         atomic(work .. "/request", json.stringify(request))
         fs.unlink(work .. "/result")
         local pid = assert(nixio.fork(), "Cannot start management worker")
@@ -96,10 +109,10 @@ local function start(request)
             os.exit(1)
         end
     end)
-    if not ok then fs.rmdir(lock); error(err, 0) end
-    return { busy = true }
+    if not ok then fs.unlink(lock .. "/id"); fs.unlink(lock .. "/id.new"); fs.unlink(work .. "/request"); fs.rmdir(lock); error(err, 0) end
+    return { busy = true, id = id }
 end
-local signatures = '{"get":{},"status":{},"job":{},"diagnostics":{"action":""},"start":{"action":"","config":"","revision":"","settings":{}}}'
+local signatures = '{"get":{},"status":{},"job":{},"diagnostics":{"action":""},"start":{"action":"","config":"","revision":"","settings":{},"nodes":""}}'
 if arg[1] == "list" then print(signatures)
 elseif arg[1] == "worker" then worker()
 elseif arg[1] == "call" then

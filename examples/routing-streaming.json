@@ -1,7 +1,9 @@
 {
   "type": "field",
   "inboundTag": [
-    "tproxy-in"
+    "tproxy-in",
+    "socks-in",
+    "http-in"
   ],
   "domain": [
     "geosite:netflix",

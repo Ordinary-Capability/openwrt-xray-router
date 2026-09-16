@@ -183,6 +183,8 @@ class RuntimeTest(LuaTest):
                       '/etc/xray-router/settings.conf': (ROOT / 'config/settings.conf').read_text()}
         self.dirs, self.commands, self.children = {}, [], []
         self.table_comment = None
+        self.omit_json_comment = False
+        self.text_table_override = None
         self.fail_install = self.fail_cleanup = False
         self.stop_early = False
         self.launch_token = None
@@ -204,11 +206,12 @@ class RuntimeTest(LuaTest):
             package.preload['luci.jsonc'] = function() return {parse=py_parse, stringify=py_encode} end
             package.preload['nixio.fs'] = function() return {readfile=py_read, unlink=py_unlink,
                 rename=py_rename, mkdir=py_mkdir, rmdir=py_rmdir, stat=py_stat, lstat=py_stat,
-                chmod=function() return true end} end
+                chmod=function(_, mode) assert(mode == '700', 'nixio expects octal strings'); return true end} end
             package.preload['nixio'] = function() return {
                 getpid=function() return 42 end, kill=function() return true end,
                 waitpid=function() return nil end, poll=py_poll, poll_flags=function() return 1 end,
-                open=function(path)
+                open=function(path, flags, mode)
+                    assert(mode == '600', 'nixio expects octal strings')
                     local locked = false
                     return {writeall=function(_, data) return py_write(path, data) end,
                         lock=function(_, mode)
@@ -224,6 +227,7 @@ class RuntimeTest(LuaTest):
             'now': lambda: self.clock, 'command': self.command, 'spawn': self.spawn, 'launch': self.launch}))
 
     def mkdir(self, path, mode):
+        self.assertEqual(mode, '700')
         if path in self.dirs: return False
         self.dirs[path] = {'uid': 0, 'type': 'dir', 'mtime': self.clock}
         return True
@@ -248,7 +252,10 @@ class RuntimeTest(LuaTest):
         if args[1:4] == ['-j', 'list', 'tables']:
             return 0, json.dumps({'nftables': [{'table': table}] if self.table_comment else []})
         if args[1:4] == ['-j', 'list', 'table']:
+            if self.omit_json_comment: table.pop('comment', None)
             return (0, json.dumps({'nftables': [{'table': table}]})) if self.table_comment else (1, 'No such table')
+        if args[1:3] == ['list', 'table']:
+            return 0, self.text_table_override or ('table inet xray_router_inspect {\n\tcomment "' + self.table_comment + '"\n}\n')
         if args[1] == '-f':
             self.table_comment = re.search(r'comment "([^"]+)"', self.files[args[2]])[1]
             return (1, 'simulated install failure') if self.fail_install else (0, '')
@@ -289,6 +296,27 @@ class RuntimeTest(LuaTest):
         self.assertIsNone(self.table_comment)
         self.assertTrue(any('install failure' in text for text in result['warnings']))
 
+    def test_old_nft_json_without_table_comment_uses_exact_text_owner(self):
+        self.omit_json_comment = True
+        result = self.run_capture()
+        self.assertIsNone(self.table_comment)
+        self.assertNotIn(self.work + '/lock', self.dirs)
+        self.assertFalse(result['active'])
+
+    def test_old_nft_cleanup_rejects_foreign_and_nested_comments(self):
+        self.omit_json_comment = True
+        self.fail_cleanup = True
+        result = self.run_capture()
+        self.fail_cleanup = False
+        self.table_comment = 'foreign-owner'
+        self.runtime.stop(self.table({'id': result['id']}))
+        self.assertEqual(self.table_comment, 'foreign-owner')
+        self.text_table_override = ('table inet xray_router_inspect {\n chain observe {\n comment "'
+                                   + 'XRAY_ROUTER_INSPECTOR:' + result['id'] + '"\n}\n}\n')
+        self.runtime.stop(self.table({'id': result['id']}))
+        self.assertEqual(self.table_comment, 'foreign-owner')
+        self.assertIn(self.work + '/lock', self.dirs)
+
     def test_cleanup_failure_retains_lock_for_explicit_recovery(self):
         self.fail_cleanup = True
         result = self.run_capture()
@@ -318,7 +346,7 @@ class RuntimeTest(LuaTest):
         self.assertEqual(before, (self.files, self.dirs, self.commands))
 
     def test_management_lock_blocks_capture(self):
-        self.mkdir('/tmp/xray-router-ui/lock', 448)
+        self.mkdir('/tmp/xray-router-ui/lock', '700')
         with self.assertRaises(Exception): self.runtime.start(self.request())
         self.assertFalse(self.commands)
 

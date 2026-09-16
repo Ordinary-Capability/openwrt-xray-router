@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI management for Xray Router
-LUCI_DEPENDS:=+luci-base +rpcd +lua +luci-lib-jsonc +luci-lib-nixio +jsonfilter
+LUCI_DEPENDS:=+luci-base +rpcd +lua +luci-lib-jsonc +luci-lib-nixio +jsonfilter +curl +ca-bundle
 LUCI_PKGARCH:=all
 
 # rpcd discovers executable plugins. Set modes in the build directory so

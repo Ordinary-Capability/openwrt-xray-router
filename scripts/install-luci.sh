@@ -20,6 +20,7 @@ command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required (normally pro
 mkdir -p /usr/libexec/xray-router /usr/libexec/rpcd /usr/share/rpcd/acl.d \
     /usr/share/luci/menu.d /www/luci-static/resources/xray-router /www/luci-static/resources/view
 cp "$APP/root/usr/libexec/xray-router/ui.lua" /usr/libexec/xray-router/ui.lua
+cp "$APP/root/usr/libexec/xray-router/node-test.lua" /usr/libexec/xray-router/node-test.lua
 cp "$APP/root/usr/libexec/xray-router/inspector.lua" /usr/libexec/xray-router/inspector.lua
 cp "$APP/root/usr/libexec/xray-router/inspector-runtime.lua" /usr/libexec/xray-router/inspector-runtime.lua
 cp "$APP/root/usr/libexec/rpcd/luci.xray-router" /usr/libexec/rpcd/luci.xray-router
@@ -27,13 +28,15 @@ cp "$APP/root/usr/libexec/rpcd/luci.xray-inspector" /usr/libexec/rpcd/luci.xray-
 cp "$APP/root/usr/share/rpcd/acl.d/luci-app-xray-router.json" /usr/share/rpcd/acl.d/
 cp "$APP/root/usr/share/luci/menu.d/luci-app-xray-router.json" /usr/share/luci/menu.d/
 cp "$APP/htdocs/luci-static/resources/xray-router/model.js" /www/luci-static/resources/xray-router/
+cp "$APP/htdocs/luci-static/resources/xray-router/inspector.js" /www/luci-static/resources/xray-router/
 cp "$APP/htdocs/luci-static/resources/view/xray-router.js" /www/luci-static/resources/view/
 cp "$APP/htdocs/luci-static/resources/view/xray-router-inspector.js" /www/luci-static/resources/view/
 chmod 0755 /usr/libexec/rpcd/luci.xray-router /usr/libexec/rpcd/luci.xray-inspector
 chmod 0644 /usr/libexec/xray-router/inspector.lua /usr/libexec/xray-router/inspector-runtime.lua \
     /www/luci-static/resources/view/xray-router-inspector.js
-chmod 0644 /usr/libexec/xray-router/ui.lua /usr/share/rpcd/acl.d/luci-app-xray-router.json \
+chmod 0644 /usr/libexec/xray-router/ui.lua /usr/libexec/xray-router/node-test.lua /usr/share/rpcd/acl.d/luci-app-xray-router.json \
     /usr/share/luci/menu.d/luci-app-xray-router.json /www/luci-static/resources/xray-router/model.js \
+    /www/luci-static/resources/xray-router/inspector.js \
     /www/luci-static/resources/view/xray-router.js
 rm -f /tmp/luci-indexcache*
 /etc/init.d/rpcd restart

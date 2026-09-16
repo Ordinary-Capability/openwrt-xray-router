@@ -26,6 +26,7 @@ load_settings() {
     : "${MANAGE_DNSMASQ:=1}"
     : "${DNSMASQ_CACHE_SIZE:=1000}"
     : "${CN_LIST_URL:=https://ftp.apnic.net/stats/apnic/delegated-apnic-latest}"
+    : "${CN_DOWNLOAD_PROXY:=}"
     : "${ALLOW_BLACKHOLE_PROXY:=0}"
 }
 
@@ -195,12 +196,20 @@ restart_stack() {
 fetch_url() {
     url="$1"
     output="$2"
-    if command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q -O "$output" "$url"
+    if [ -n "$CN_DOWNLOAD_PROXY" ]; then
+        command -v curl >/dev/null 2>&1 \
+            || die "CN_DOWNLOAD_PROXY requires curl; install it with: opkg install curl"
+        say "using configured download proxy"
+        # uclient-fetch in OpenWrt 22.03 cannot tunnel HTTPS with HTTP CONNECT.
+        # An explicit proxy must not fall back to a direct connection.
+        curl -q -fsSL --connect-timeout 15 --max-time 120 \
+            --proxy "$CN_DOWNLOAD_PROXY" --noproxy '' "$url" -o "$output"
+    elif command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q -T 30 -O "$output" "$url"
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$output" "$url"
+        wget -q -T 30 -O "$output" "$url"
     elif command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$url" -o "$output"
+        curl -q -fsSL --connect-timeout 15 --max-time 120 "$url" -o "$output"
     else
         die "install uclient-fetch, wget, or curl to download the APNIC list"
     fi
@@ -216,7 +225,8 @@ update_cn() {
     trap 'rm -f "$raw" "$cidrs" "$old"' EXIT HUP INT TERM
 
     say "downloading APNIC delegated data"
-    fetch_url "$url" "$raw"
+    fetch_url "$url" "$raw" \
+        || die "APNIC download failed; previous CN list kept. Check CN_LIST_URL and network access, or configure CN_DOWNLOAD_PROXY in $SETTINGS_FILE."
     awk -F '|' '
         $1 == "apnic" && $2 == "CN" && $3 == "ipv4" &&
         ($7 == "allocated" || $7 == "assigned") {

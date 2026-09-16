@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
-const source = fs.readFileSync(path.join(root, 'luci-app-xray-router/htdocs/luci-static/resources/view/xray-router-inspector.js'), 'utf8');
+const source = fs.readFileSync(path.join(root, 'luci-app-xray-router/htdocs/luci-static/resources/xray-router/inspector.js'), 'utf8');
 function E(tag, attrs, children) {
 	if (typeof attrs === 'string' || Array.isArray(attrs)) { children = attrs; attrs = {}; }
 	return { tag, ...(attrs || {}), children: children || [], value: '', textContent: '',
@@ -14,8 +14,9 @@ function flatten(node) {
 	return [node, ...(Array.isArray(node.children) ? node.children : [node.children]).flatMap(flatten)];
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
-async function test(writable) {
+async function test(writable, embedded) {
 	let current = { rows: {} }, job = { busy: false }, poller, modal;
+	let active = true, dirty = false, configRefreshes = 0;
 	const calls = [], notices = [];
 	const rpc = { declare: spec => (...args) => {
 		calls.push({ ...spec, args });
@@ -29,12 +30,14 @@ async function test(writable) {
 		if (spec.method === 'start') job = { busy: true };
 		return Promise.resolve(job);
 	} };
-	const view = new Function('view', 'rpc', 'ui', 'poll', 'E', '_', 'L', source)(
+	const view = new Function('baseclass', 'rpc', 'ui', 'poll', 'E', '_', 'L', source)(
 		{ extend: value => value }, rpc,
 		{ showModal(title, content) { modal = { title, content }; }, hideModal() {}, addNotification(_, node) { notices.push(node); } },
 		{ add: callback => { poller = callback; } }, E, text => text,
 		{ hasViewPermission: () => writable, url: path => '/cgi-bin/luci/' + path });
-	const tree = view.render(await view.load());
+	const context = embedded ? { embedded: true, isActive: () => active, isDirty: () => dirty,
+		onConfigChanged: () => { configRefreshes++; } } : undefined;
+	const tree = view.render(await view.load(), context);
 	const nodes = () => flatten(tree);
 	const button = text => nodes().find(node => node.tag === 'button' && node.children === text);
 	const field = id => nodes().find(node => node.id === id);
@@ -42,7 +45,15 @@ async function test(writable) {
 	assert.equal(button('Enable info logging…').disabled, !writable);
 	assert.equal(field('inspect-device').disabled, !writable);
 	assert.equal(button('Download report').disabled, true);
+	assert.equal(nodes().some(n => n.tag === 'h2'), !embedded);
 	if (!writable) return;
+	if (embedded) {
+		active = false;
+		const before = calls.length;
+		await poller();
+		assert.equal(calls.length, before, 'hidden idle Inspector does not poll');
+		active = true;
+	}
 	field('inspect-device').value = '192.168.1.100';
 	field('inspect-expected').value = 'proxy-stream';
 	button('Start capture').click(); await tick();
@@ -55,8 +66,10 @@ async function test(writable) {
 		network: 'tcp', domain: '<script>unsafe</script>', domain_evidence: 'sniffed', path: 'proxy-main',
 		rule: 'DEFAULT-PROXY', mismatch: true, outcome: 'Selected; outcome unknown', last: 101, evidence: [] },
 		{ id: 2, source_port: 50001, destination: '1.1.1.1', port: 443, network: 'udp', path: 'unknown', outcome: 'Not established' }];
+	active = false;
 	await poller();
 	assert.equal(nodes().filter(node => node.tag === 'button' && node.children === 'Details').length, 2);
+	active = true;
 	assert(nodes().some(node => node.tag === 'td' && String(node.children).includes('<script>unsafe</script>')));
 	assert(!nodes().some(node => node.tag === 'script'), 'untrusted evidence must remain text');
 	field('inspect-problems').checked = true; field('inspect-problems').change();
@@ -64,16 +77,31 @@ async function test(writable) {
 	button('Stop / clean up').click(); await tick();
 	assert.equal(button('Start capture').disabled, false);
 	assert(!calls.some(call => call.object === 'luci.xray-router' && call.method === 'start'), 'capture/stop must never restart Xray');
+	if (embedded) {
+		dirty = true;
+		button('Enable info logging…').click(); await tick();
+		assert.equal(modal, undefined, 'pending edits block logging before confirmation');
+		assert(notices.at(-1).children.includes('Save or reload'));
+		dirty = false;
+	}
 	button('Enable info logging…').click(); await tick();
 	assert.equal(modal.title, 'Change logging and restart Xray');
 	assert(!calls.some(call => call.object === 'luci.xray-router' && call.method === 'start'), 'opening confirmation must not change logging');
+	if (embedded) {
+		dirty = true;
+		modal.content.flatMap(flatten).find(node => node.children === 'Apply log level and restart').click(); await tick();
+		assert(!calls.some(call => call.object === 'luci.xray-router' && call.method === 'start'), 'confirmation rechecks pending edits');
+		dirty = false;
+	}
 	modal.content.flatMap(flatten).find(node => node.children === 'Apply log level and restart').click(); await tick();
 	assert.equal(calls.find(call => call.object === 'luci.xray-router' && call.method === 'start').args[0], 'logging-info');
 	assert.equal(button('Start capture').disabled, true);
 	job = { busy: false, code: 0, output: 'Logging changed and service restarted.' };
+	active = false;
 	await poller();
 	assert.equal(button('Start capture').disabled, false);
-	assert.equal(notices.length, 1);
+	assert.equal(configRefreshes, embedded ? 1 : 0);
+	assert.equal(notices.length, embedded ? 3 : 1);
 }
-Promise.all([test(true), test(false)]).then(() => console.log('Inspector UI capture, filtering, permissions and restart-confirmation tests passed'))
+Promise.all([test(true, false), test(false, false), test(true, true), test(false, true)]).then(() => console.log('Inspector UI capture, filtering, permissions, embedded tabs and restart-confirmation tests passed'))
 	.catch(error => { console.error(error); process.exitCode = 1; });

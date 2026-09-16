@@ -9,7 +9,8 @@ trap 'rm -f "$TEMP"' EXIT HUP INT TERM
 for file in "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/src/xrayctl" \
             "$ROOT/src/policy.sh" "$ROOT/src/xray-router.init" \
             "$ROOT/tests/test-policy.sh" "$ROOT/tests/test-placeholder.sh" \
-            "$ROOT/tests/test-restart.sh" "$ROOT/scripts/install-luci.sh"; do
+            "$ROOT/tests/test-restart.sh" "$ROOT/tests/test-update-cn.sh" \
+            "$ROOT/scripts/install-luci.sh"; do
     sh -n "$file"
 done
 
@@ -29,6 +30,7 @@ grep -q 'meta nfproto ipv6.*reject' "$TEMP"
 sh "$ROOT/tests/test-policy.sh"
 sh "$ROOT/tests/test-placeholder.sh"
 sh "$ROOT/tests/test-restart.sh"
+sh "$ROOT/tests/test-update-cn.sh"
 
 if command -v node >/dev/null 2>&1; then
     node "$ROOT/tests/test-luci.js"

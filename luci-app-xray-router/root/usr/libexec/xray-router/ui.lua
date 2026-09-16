@@ -1,6 +1,7 @@
 -- XRAY_ROUTER_PROJECT: LuCI backend. Dependencies are injected for isolated tests.
 local M = {}
-local files = { "config.json", "settings.conf" }
+local files = { "config.json", "settings.conf", "nodes.json" }
+local proxy_tags = { "proxy-main", "proxy-backup", "proxy-stream" }
 local stream_disabled_tag = "xray-router-stream-disabled"
 local stream_placeholder = "domain:example-stream.invalid"
 local function check(ok, message) if not ok then error(message, 0) end end
@@ -99,6 +100,80 @@ function M.new(d)
         return values
     end
     local function revision() return d.revision(files) end
+    local function copy(value) return parse(d.json.stringify(value)) end
+    local function without_tag(outbound)
+        local value = copy(outbound)
+        value.tag = nil
+        return value
+    end
+    local function validate_library(raw)
+        check(type(raw) == "string" and #raw <= 262144, "Node library exceeds 256 KiB")
+        local library = parse(raw)
+        check(library.version == 1 and type(library.nodes) == "table" and type(library.bindings) == "table", "Invalid node library")
+        for key in pairs(library) do check(key == "version" or key == "nodes" or key == "bindings", "Unknown library field") end
+        local count, aliases = 0, {}
+        for id, node in pairs(library.nodes) do
+            count = count + 1
+            check(type(id) == "string" and #id <= 64 and id:match("^node%-%w[%w%-]*$"), "Invalid node ID")
+            check(type(node) == "table", "Invalid proxy node")
+            for key in pairs(node) do check(key == "alias" or key == "outbound", "Unknown node field") end
+            local alias = node.alias
+            check(type(alias) == "string" and #alias > 0 and #alias <= 64 and not alias:find("%c") and
+                alias == alias:match("^%s*(.-)%s*$"), "Enter a node alias (1–64 bytes, without surrounding whitespace)")
+            check(not aliases[alias:lower()], "Node aliases must be unique")
+            aliases[alias:lower()] = true
+            local outbound = node.outbound
+            check(type(outbound) == "table" and type(outbound.protocol) == "string" and outbound.protocol:match("^[%w%-]+$"), "Invalid node outbound")
+            check(outbound.tag == nil, "Node JSON must not contain a tag; tags belong to assignments")
+            for key in pairs(outbound) do check(type(key) == "string", "Node outbound must be an object") end
+        end
+        check(count <= 64, "At most 64 proxy nodes are supported")
+        for tag in pairs(library.bindings) do
+            check(tag == "proxy-main" or tag == "proxy-backup" or tag == "proxy-stream", "Unknown outbound assignment")
+        end
+        for _, tag in ipairs(proxy_tags) do
+            local id = library.bindings[tag]
+            check(type(id) == "string" and (id == "" or library.nodes[id]), "Assignment refers to a missing node: " .. tag)
+        end
+        return library
+    end
+    local function resolved(library, config, tag)
+        local id = library.bindings[tag]
+        if id ~= "" then
+            local outbound = copy(library.nodes[id].outbound)
+            outbound.tag = tag
+            return outbound
+        end
+        local previous = optional(config.outbounds, "tag", tag)
+        if previous and previous.protocol == "blackhole" then return copy(previous) end
+        return { tag = tag, protocol = "blackhole", settings = { response = { type = "none" } } }
+    end
+    local function library_for(config, raw)
+        local library = raw and validate_library(raw) or { version = 1, nodes = {}, bindings = {} }
+        local imported = false
+        for _, tag in ipairs(proxy_tags) do
+            local outbound = optional(config.outbounds, "tag", tag)
+            local id = library.bindings[tag]
+            if not raw or (outbound and not equal(resolved(library, config, tag), outbound)) then
+                imported = imported or raw ~= nil
+                library.bindings[tag] = ""
+                if outbound and outbound.protocol ~= "blackhole" then
+                    local base = "node-" .. tag
+                    id = base
+                    local n = 1
+                    while library.nodes[id] do n = n + 1; id = base .. "-" .. n end
+                    local alias = tag == "proxy-main" and outbound.protocol == "socks" and "host-socks" or tag:gsub("^proxy%-", "")
+                    local base_alias, used = alias, {}
+                    for _, node in pairs(library.nodes) do used[node.alias:lower()] = true end
+                    n = 1
+                    while used[alias:lower()] do n = n + 1; alias = base_alias .. "-" .. n end
+                    library.nodes[id] = { alias = alias, outbound = without_tag(outbound) }
+                    library.bindings[tag] = id
+                end
+            end
+        end
+        return library, imported
+    end
     local function append_settings(raw, values)
         check(type(values) == "table", "Missing routing settings")
         for key in pairs(values) do
@@ -173,11 +248,19 @@ function M.new(d)
     end
     local function snapshot()
         local out = {}
-        for _, name in ipairs(files) do out[name] = read(conf .. "/" .. name) end
+        for _, name in ipairs(files) do
+            if name == "nodes.json" then out[name] = d.read(conf .. "/" .. name) or false
+            else out[name] = read(conf .. "/" .. name) end
+        end
         return out
     end
     local function put(directory, contents)
-        for _, name in ipairs(files) do d.atomic(directory .. "/" .. name, contents[name]) end
+        for _, name in ipairs(files) do
+            local path = directory .. "/" .. name
+            if contents[name] then
+                if d.read(path) ~= contents[name] then d.atomic(path, contents[name]) end
+            elseif d.read(path) then d.remove(path); check(not d.read(path), "Cannot remove " .. path) end
+        end
     end
     local function validate(candidate)
         d.mkdir(work .. "/candidate")
@@ -189,10 +272,15 @@ function M.new(d)
     end
     local function apply(candidate, expected, rollback)
         check(expected == revision(), "Configuration changed since this page loaded; reload before saving")
-        local code, output = validate(candidate)
+        local previous, running = snapshot(), d.running()
+        -- Preserve exact runtime bytes for metadata-only saves.
+        if equal(parse(candidate["config.json"]), parse(previous["config.json"])) then candidate["config.json"] = previous["config.json"] end
+        local runtime_changed = candidate["config.json"] ~= previous["config.json"] or candidate["settings.conf"] ~= previous["settings.conf"] or
+            (rollback and d.read(pending) ~= nil)
+        local code, output = 0, "Node library validated."
+        if runtime_changed then code, output = validate(candidate) end
         if code ~= 0 then return result(code, "Validation failed; current files retained.\n" .. output) end
         check(expected == revision(), "Configuration changed during validation; reload before saving")
-        local previous, running = snapshot(), d.running()
         d.mkdir(conf .. "/backups")
         d.mkdir(backup)
         -- An interrupted transaction already has the correct recovery snapshot.
@@ -200,7 +288,7 @@ function M.new(d)
         d.atomic(pending, "Restore backups/luci-last if an apply is interrupted.\n")
         local installed, failure = pcall(function()
             put(conf, candidate)
-            if running then
+            if running and runtime_changed then
                 local rc, text = d.run("restart")
                 output = output .. "\n" .. text
                 check(rc == 0, "Service restart failed")
@@ -210,9 +298,12 @@ function M.new(d)
             local restored, restore_error = pcall(function()
                 -- Restore the last complete snapshot, also after a partial file write.
                 local safe = {}
-                for _, name in ipairs(files) do safe[name] = read(backup .. "/" .. name) end
+                for _, name in ipairs(files) do
+                    if name == "nodes.json" then safe[name] = d.read(backup .. "/" .. name) or false
+                    else safe[name] = read(backup .. "/" .. name) end
+                end
                 put(conf, safe)
-                if running then
+                if running and runtime_changed then
                     local rc, text = d.run("restart")
                     output = output .. "\n" .. text
                     check(rc == 0, "Restored files, but service recovery failed; inspect diagnostics")
@@ -224,7 +315,7 @@ function M.new(d)
         end
         d.remove(pending)
         return result(0, output .. "\n" .. (rollback and "Previous configuration restored." or "Configuration saved.") ..
-            (running and " Service restarted." or " Service remains stopped."))
+            (not runtime_changed and " Running configuration unchanged; no restart." or running and " Service restarted." or " Service remains stopped."))
     end
 
     function self.get()
@@ -232,6 +323,9 @@ function M.new(d)
         local response = { config = read(conf .. "/config.json"), settings = settings(read(conf .. "/settings.conf")),
             revision = before, rollback_available = d.read(backup .. "/config.json") ~= nil,
             recovery_required = d.read(pending) ~= nil }
+        local library, imported = library_for(parse(response.config), d.read(conf .. "/nodes.json"))
+        response.nodes = d.json.stringify(library)
+        response.nodes_notice = imported and "Outbounds changed outside the node library. Current outbounds were imported into this draft; review and save to keep these assignments." or ""
         check(before == revision(), "Configuration is being updated; retry loading the page")
         return response
     end
@@ -245,8 +339,16 @@ function M.new(d)
     end
     function self.perform(request)
         local action = request.action
+        if action == "test-node" then
+            check(type(request.config) == "string" and #request.config <= 262144, "Node JSON exceeds 256 KiB")
+            local node = parse(request.config)
+            -- Reuse the same node validation as library saves, including tag ownership.
+            validate_library(d.json.stringify({ version = 1, nodes = { ["node-test"] = { alias = "test", outbound = node } },
+                bindings = { ["proxy-main"] = "", ["proxy-backup"] = "", ["proxy-stream"] = "" } }))
+            return d.test_node(node)
+        end
         local changes_stack = { save=true, rollback=true, start=true, restart=true,
-            ["firewall-reload"]=true, ["logging-info"]=true, ["logging-warning"]=true }
+            ["firewall-reload"]=true, ["update-cn"]=true, ["logging-info"]=true, ["logging-warning"]=true }
         if changes_stack[action] and d.capture_active then
             check(not d.capture_active(), "Stop the traffic capture before changing the running stack")
         end
@@ -264,15 +366,30 @@ function M.new(d)
             local previous = snapshot()
             validate_edit(previous["config.json"], request.config)
             local raw = append_settings(previous["settings.conf"], request.settings)
-            return apply({ ["config.json"] = request.config, ["settings.conf"] = raw }, request.revision)
+            if equal(settings(previous["settings.conf"]), request.settings) then raw = previous["settings.conf"] end
+            local config = parse(request.config)
+            local library
+            if request.nodes and request.nodes ~= "" then
+                library = validate_library(request.nodes)
+                for _, tag in ipairs(proxy_tags) do
+                    check(equal(resolved(library, config, tag), named(config.outbounds, "tag", tag)), "Node assignment does not match outbound: " .. tag)
+                end
+            else
+                library = library_for(config, previous["nodes.json"] or nil)
+            end
+            return apply({ ["config.json"] = request.config, ["settings.conf"] = raw,
+                ["nodes.json"] = d.json.stringify(library) .. "\n" }, request.revision)
         elseif action == "rollback" then
             local candidate = {}
-            for _, name in ipairs(files) do candidate[name] = read(backup .. "/" .. name) end
+            for _, name in ipairs(files) do
+                if name == "nodes.json" then candidate[name] = d.read(backup .. "/" .. name) or false
+                else candidate[name] = read(backup .. "/" .. name) end
+            end
             return apply(candidate, request.revision, true)
         end
         check(not d.read(pending) or action == "stop", "Interrupted apply detected; restore the previous configuration first")
         local allowed = { start = true, stop = true, restart = true, enable = true,
-            disable = true, validate = true, doctor = true, ["firewall-reload"] = true }
+            disable = true, validate = true, doctor = true, ["firewall-reload"] = true, ["update-cn"] = true }
         check(allowed[action], "Unknown management action")
         local code, output = d.run(action)
         return result(code, output)

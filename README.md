@@ -253,7 +253,25 @@ are evaluated top to bottom. The supplied order is:
 ### Check ports and interfaces
 
 `TPROXY_PORT=12345` and `XRAY_DNS_PORT=1053` in `settings.conf` must match the
-two inbound ports in `config.json`.
+transparent and DNS inbound ports in `config.json`.
+
+LAN applications can also connect explicitly through **SOCKS5 on port 10808**
+or **HTTP proxy on port 10809** (including HTTPS through CONNECT). Set both
+listeners' `listen` addresses and the SOCKS `settings.ip` to your router's LAN
+IPv4 address before starting. The template uses `192.168.1.1`; the host-only
+development VM uses `192.168.80.2`. SOCKS UDP relay is enabled. These listeners
+use no authentication and are intended for the trusted LAN; retain the WAN
+input rejection and do not forward these ports from WAN.
+
+Explicit proxy connections use the same Xray domain rules and outbound
+assignments, including streaming when enabled. They do not pass through the
+transparent path's kernel CN fast path. No client default-gateway change is
+needed: configure the proxy only in the application being tested. For the VM:
+
+```sh
+curl --socks5-hostname 192.168.80.2:10808 https://1.1.1.1/cdn-cgi/trace
+curl --proxy http://192.168.80.2:10809 https://1.1.1.1/cdn-cgi/trace
+```
 
 `LAN_INTERFACES` is a space-separated list of Linux device names, for example:
 
@@ -300,6 +318,17 @@ xrayctl update-cn
 The updater downloads the source, converts only CN IPv4 allocations to CIDRs,
 checks that the result is plausible, and reloads the firewall if the service is
 already active. It does not download a pre-generated executable rule file.
+
+For a router without direct Internet access, install `curl` and set
+`CN_DOWNLOAD_PROXY` in `/etc/xray-router/settings.conf`, for example
+`http://192.168.1.1:10809` for its running Xray HTTP inbound, or
+`socks5h://192.168.1.1:10808` for SOCKS with proxy-side DNS. Use the actual
+listener address. This setting applies only to CN list downloads and does not
+change the router's default route. With a proxy configured, the updater uses
+curl with a 15-second connection timeout and a 120-second overall timeout,
+keeps TLS verification enabled, and never retries directly. Failed downloads
+leave the previous list intact. The LuCI **Update CN IP list** button uses the
+same saved setting.
 
 ## 5. Start and test
 
@@ -354,13 +383,15 @@ Run `xrayctl help` for the complete command list.
 ### Optional web management
 
 Install the LuCI dependencies and run `sh install.sh --with-luci` to add
-**Services → Xray Router**. The page provides service/boot controls, primary
-and backup outbound editors with templates, health checks, routing settings,
-diagnostics, and validated Save & Apply with rollback. DNS routing stays as
-configured. See [LuCI installation and recovery](docs/LUCI.md) for the complete
-instructions and test coverage.
+**Services → Xray Router**, with three tabs: **Routing**, **Proxy Nodes**, and
+**Inspector**. Routing shows ordered rules and outbound-tag → node mappings,
+alongside routing and health-check settings. Proxy Nodes holds a reusable node
+library with aliases and outbound JSON; Routing dropdowns assign those nodes
+to the primary, backup, and streaming tags. Save & Apply includes the library
+in rollback, and library-only changes do not restart Xray. Tab switches preserve
+unsaved edits. See [LuCI installation and recovery](docs/LUCI.md).
 
-**Services → Xray Traffic Inspector** captures one LAN device for 30–120
+The **Inspector** tab captures one LAN device for 30–120
 seconds and shows destination IP/domain evidence, selected outbound, matched
 rule when logged, and sampled kernel bypass decisions. Capture never restarts
 Xray. Optional info logging is a separate confirmed restart action. See

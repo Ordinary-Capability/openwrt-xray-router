@@ -42,6 +42,14 @@ Unknown or foreign destinations enter Xray at `127.0.0.1:12345`. Sniffing uses
 HTTP Host, TLS SNI, or QUIC metadata for domain rules while `routeOnly=true`
 retains the client's original destination address.
 
+Applications can instead use the LAN-bound `socks-in` listener on port 10808
+or `http-in` on port 10809. These enter Xray directly and use its ordered
+routing rules and proxy assignments, bypassing the kernel CN fast path.
+SOCKS supports TCP and UDP; HTTP supports ordinary HTTP requests and HTTPS
+CONNECT. Bind the listeners to the router's LAN address; SOCKS `settings.ip`
+must advertise that same address for UDP relay. Streaming enablement includes
+both explicit proxy listeners alongside `tproxy-in`.
+
 ## DNS path
 
 dnsmasq listens on the normal LAN/router port 53 and forwards cache misses to

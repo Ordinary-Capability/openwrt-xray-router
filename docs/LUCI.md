@@ -39,20 +39,61 @@ in the Windows development environment.
 
 ## Controls
 
-The separate **Services → Xray Traffic Inspector** page captures traffic for a
-selected LAN IPv4 device without restarting Xray. It provides path comparison,
-kernel bypass evidence, correlated Xray logs, and report export. Changing log
-levels is an explicit, separately confirmed action that restarts a running
-service. See [Traffic Inspector](TRAFFIC-INSPECTOR.md).
+There is one **Services → Xray Router** entry with three tabs:
+
+- **Routing:** ordered Xray rules, their outbound/balancer targets, and the
+  corresponding node aliases and endpoints. Dropdowns assign library nodes to
+  `proxy-main`, `proxy-backup`, and `proxy-stream`. This tab also holds routing, streaming-domain, and health-check
+  settings. Kernel bypass rules take effect before Xray's ordered rules.
+- **Proxy Nodes:** a reusable library of named nodes, such as `us-vps` and
+  `jp-vps`, with Add, Edit, Duplicate, and Delete actions. Each node has an alias
+  and a complete outbound JSON object, with SOCKS5 and VLESS REALITY templates.
+- **Inspector:** capture traffic for a selected LAN IPv4 device without
+  restarting Xray, compare paths, inspect evidence, and export reports. See
+  [Traffic Inspector](TRAFFIC-INSPECTOR.md).
+
+Switching tabs keeps unsaved edits and Inspector results; it does not apply
+configuration or restart the service. Save & Apply covers both configuration
+tabs. Inspector log-level changes retain their explicit restart confirmation
+and require saving or discarding any pending configuration edits first.
+The old Inspector URL remains available for bookmarks but has no separate
+Services menu entry. Xray's runtime configuration schema is unchanged.
+
+Each row in **Proxy Nodes** has a **Test** button and a Connectivity result.
+Testing uses that node's current draft, including nodes that have not been saved
+or assigned. A temporary Xray process listens only on loopback and sends one
+HTTPS request to `https://www.gstatic.com/generate_204` through that node alone.
+HTTP 204 counts as success; the displayed milliseconds measure the whole request,
+including proxy setup and TLS. This checks HTTPS connectivity, not bandwidth,
+UDP support, streaming access, or the normal routing rules. No other node is used
+as a fallback. Nodes that reference another outbound cannot be tested alone.
+
+The test requires `curl` and CA certificates (`opkg install curl ca-bundle` for
+manual installations). The request times out after 15 seconds, and the temporary
+Xray process is removed when the test finishes, with a 30-second watchdog if the
+worker dies. Active Xray, routing, and saved files are unchanged. Results last
+until the page reloads; editing a node's outbound clears its previous result.
 
 - **Start, Stop, Restart:** call the existing stack manager. Stop restores the
   saved dnsmasq baseline as it does in the CLI.
 - **Enable/Disable at boot:** control the project's init service.
-- **Primary and backup:** edit complete outbound objects independently. The
-  SOCKS5 and VLESS REALITY templates contain example values to replace. The
-  app preserves advanced protocol fields and fixes each object's tag.
-- **Streaming outbound:** configure a separate node with the same outbound
-  editor and VLESS REALITY/SOCKS5 templates. Enable streaming routing, add the
+- **Update CN IP list:** next to **Disable at boot**, runs `xrayctl update-cn`
+  in the background using the saved `CN_LIST_URL`. The final output appears in
+  Diagnostics. It refreshes the active kernel fast path when the service is
+  running, without restarting Xray or applying unsaved form edits. Stop an
+  Inspector capture before updating. Download errors are shown in the output;
+  the router needs access to the configured download URL. For an isolated VM,
+  set `CN_DOWNLOAD_PROXY` in `/etc/xray-router/settings.conf` and install `curl`.
+  For example, `http://192.168.80.2:10809` uses this test VM's Xray HTTP inbound
+  and its configured outbound nodes. An explicit proxy never falls back to a
+  direct connection; failed downloads retain the previous list.
+- **Primary and backup:** choose nodes under **Outbound tags → configuration**.
+  One library node can serve multiple tags; each runtime copy receives the
+  appropriate fixed tag. Templates contain example values to replace. Advanced
+  protocol fields are preserved. Node aliases are independent of routing tags.
+- **Streaming outbound:** configure a separate node in **Proxy Nodes** with the
+  same outbound editor and VLESS REALITY/SOCKS5 templates. In **Routing**, assign
+  it to `proxy-stream`, enable streaming routing, and add the
   Netflix/Prime Video/HBO/Max/Disney+ presets, or enter custom domains. Preset
   additions retain custom entries and avoid duplicates. Disable streaming
   without losing the node or domain list. An enabled streaming route requires
@@ -81,15 +122,42 @@ only the missing `proxy-stream` outbound and `STREAMING-PROXY` rule after
 streaming objects and their additional fields are preserved; the UI can edit
 only the node, domain list and enabled state, not rule order or destination.
 
+## Node library and assignments
+
+Use **Add node**, enter a unique alias and outbound JSON, then **Use node** to
+update the draft. A pasted `tag` is removed: the Routing assignment supplies it.
+**Save & Apply** saves both tabs. Renaming an alias retains its stable node ID,
+so assignments remain intact. Editing an assigned node updates all tags using
+it on apply. Unassign a node before deleting it; unconfigured slots block traffic.
+
+The root-only `/etc/xray-router/nodes.json` stores schema version 1, a `nodes`
+object keyed by stable IDs (`alias` and `outbound` per node), and a `bindings`
+object mapping the three proxy tags to node IDs. An empty binding means
+unconfigured. Up to 64 nodes and 256 KiB of library JSON are supported.
+Unused nodes are checked for valid JSON structure; Xray checks their complete
+protocol/transport configuration when they are assigned and applied.
+
+On first load, existing configured outbounds are imported into the draft library
+without writes or restarts. Existing blackholes remain unconfigured slots. A
+SOCKS primary is initially named `host-socks`; aliases can be edited. If an SSH
+edit changes a configured outbound later, the UI imports that current outbound
+into a new draft node and displays a notice, retaining the old library node.
+
+Adding unused nodes, changing aliases, or assigning an identical outbound saves
+metadata without changing runtime files or restarting Xray. Changes to assigned
+node contents or routing use the existing validated runtime apply flow. The
+library and bindings are included in revision checking, backups, and recovery.
+
 ## Save, apply, and recover
 
 1. The backend rejects changes made from a stale configuration revision.
-2. Candidate files are written under a private temporary directory. The backend
-   runs `xrayctl validate` against that directory, including the fw4 check.
-3. Previous `config.json` and `settings.conf` files are kept in
+2. For runtime changes, candidate files are written under a private temporary
+   directory and checked with `xrayctl validate`, including the fw4 check.
+3. Previous `config.json`, `settings.conf`, and optional `nodes.json` are kept in
    `/etc/xray-router/backups/luci-last/` with restricted permissions.
 4. Validated files replace the current files using individual atomic renames.
-5. A running service restarts. A stopped service remains stopped.
+5. Runtime changes restart a running service. Library-only changes do not
+   restart it. A stopped service remains stopped.
 6. If installation or restart fails, the backend restores the previous files
    and attempts to restart the previously running stack. Any failed recovery
    is reported in the diagnostics panel.
@@ -107,6 +175,11 @@ used, recover from SSH:
 xrayctl stop
 cp /etc/xray-router/backups/luci-last/config.json /etc/xray-router/config.json
 cp /etc/xray-router/backups/luci-last/settings.conf /etc/xray-router/settings.conf
+if [ -f /etc/xray-router/backups/luci-last/nodes.json ]; then
+    cp /etc/xray-router/backups/luci-last/nodes.json /etc/xray-router/nodes.json
+else
+    rm -f /etc/xray-router/nodes.json
+fi
 xrayctl validate
 # Only after validation succeeds:
 rm -f /etc/xray-router/backups/luci-pending
@@ -129,6 +202,8 @@ this ACL to users who should not see proxy credentials or manage this service.
 The backend accepts only the exposed outbound/probe/domain changes and three
 routing settings. It rejects changes to DNS and other configuration sections.
 Routing values are checked before being written to the shell settings file.
+Library saves also validate aliases, node IDs, references, and exact agreement
+between assigned nodes and the submitted runtime outbounds.
 
 ## Verification
 
@@ -146,8 +221,25 @@ The backend tests use in-memory files and fake service commands. They verify
 validation rejection, rollback, partial-write recovery, conflict detection,
 input restrictions, streaming migration/toggling, and DNS preservation.
 JavaScript tests cover configuration edits, streaming templates/presets,
-RPC submission, read-only controls, and preservation of failed-save edits.
+RPC submission, read-only controls, route mappings, and preservation of edits
+across tab switches and failed saves. Inspector tests cover embedded polling,
+pending-edit guards, and configuration refresh after logging changes.
+Node-library tests cover shared assignments, alias uniqueness, metadata-only
+saves, stale revisions, external edits, and recovery of all three saved files.
 These do not replace testing on your router's LuCI/rpcd build.
+
+Verified on OpenWrt 22.03.2 x86/64 with Xray 26.9.9: page loading,
+authenticated validation, Save & Apply, and traffic capture start/stop.
+The three-tab layout was also checked live: one Services entry, route/node
+mappings, drafts retained across tabs, and embedded capture start/stop. The UI
+update and these tab checks left the Xray PID and the Xray, network, DHCP, and
+firewall configuration hashes unchanged.
+The node library was verified on the same VM: import `host-socks`, duplicate a
+node, assign it through the Routing dropdown, save/reload, and roll back the
+library and assignment. Identical outbound assignments caused no Xray restart
+or runtime file changes; the temporary test node was removed by rollback.
+The nixio adapter uses octal permission strings for compatibility with this
+release's Lua bindings.
 
 On-router checks after installation:
 
