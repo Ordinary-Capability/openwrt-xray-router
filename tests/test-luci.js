@@ -43,6 +43,24 @@ assert.equal(model.read(disabled).stream_domains, streamValues.stream_domains);
 assert.deepEqual(JSON.parse(disabled).outbounds.find(o => o.tag === 'proxy-stream'), streamOutbound);
 assert.deepEqual(JSON.parse(model.build(disabled, { ...model.read(disabled), stream_enabled: '1' }))
 	.routing.rules.find(r => r.ruleTag === 'STREAMING-PROXY'), streamRule);
+// A deployed router can include explicit SOCKS/HTTP listeners in the streaming scope.
+const multiInbound = structuredClone(streaming);
+multiInbound.inbounds.push({ tag: 'socks-in', protocol: 'socks', port: 10808 },
+	{ tag: 'http-in', protocol: 'http', port: 10809 });
+const multiRule = multiInbound.routing.rules.find(r => r.ruleTag === 'STREAMING-PROXY');
+multiRule.inboundTag = ['tproxy-in', 'socks-in', 'http-in'];
+const multiRaw = JSON.stringify(multiInbound);
+assert.equal(model.read(multiRaw).stream_enabled, '1');
+assert.deepEqual(JSON.parse(model.build(multiRaw, model.read(multiRaw))), multiInbound,
+	'ordinary saves must preserve streaming scope, DNS, and all listener settings');
+const multiDisabled = model.build(multiRaw, { ...model.read(multiRaw), stream_enabled: '0' });
+assert.equal(model.read(multiDisabled).stream_enabled, '0');
+assert.deepEqual(JSON.parse(model.build(multiDisabled, { ...model.read(multiDisabled), stream_enabled: '1' })),
+	multiInbound, 'disable/re-enable must restore streaming for SOCKS and HTTP');
+const narrow = structuredClone(multiInbound);
+narrow.routing.rules.find(r => r.ruleTag === 'STREAMING-PROXY').inboundTag = ['tproxy-in'];
+assert.deepEqual(JSON.parse(model.build(JSON.stringify(narrow), model.read(JSON.stringify(narrow)))), narrow,
+	'ordinary saves must not expand an existing scope');
 const legacy = JSON.parse(raw);
 legacy.outbounds = legacy.outbounds.filter(o => o.tag !== 'proxy-stream');
 legacy.routing.rules = legacy.routing.rules.filter(r => r.ruleTag !== 'STREAMING-PROXY');
