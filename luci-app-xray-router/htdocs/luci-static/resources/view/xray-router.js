@@ -34,17 +34,25 @@ return view.extend({
 		var canWrite = L.hasViewPermission();
 		var buttons = [];
 		var output = E('pre', { 'style': 'white-space:pre-wrap;max-height:28em;overflow:auto', 'aria-live': 'polite' }, _('Ready.'));
-		var status = E('p', { 'aria-live': 'polite' });
+		var status = E('span', { 'class': 'xr-badge xr-status', 'aria-live': 'polite' });
+		var bootEnabled = false, diagnostics;
+		var boot = E('input', { 'id': 'xray-boot', 'type': 'checkbox', 'role': 'switch',
+			'change': function() {
+				if (busy || !canWrite) { boot.checked = bootEnabled; return; }
+				launch(boot.checked ? 'enable' : 'disable').catch(function(err) { boot.checked = bootEnabled; error(err); });
+			} });
 		var notice = E('p', { 'class': 'alert-message warning', 'hidden': state.recovery_required ? null : '' },
 			_('An earlier apply was interrupted. Restore the previous configuration before making further changes.'));
-		var pending = E('p', { 'id': 'xray-operation-status', 'aria-live': 'polite',
-			'style': 'min-height:1.5em;line-height:1.5em' });
-		function error(err) { output.textContent = err.message || String(err); ui.addNotification(null, E('p', {}, [output.textContent]), 'error'); }
+		var pending = E('p', { 'id': 'xray-operation-status', 'aria-live': 'polite' });
+		function showOutput(text) { output.textContent = text; if (diagnostics) diagnostics.open = true; }
+		function error(err) { showOutput(err.message || String(err)); ui.addNotification(null, E('p', {}, [output.textContent]), 'error'); }
+		function help(title, text) { return E('details', { 'class': 'xr-help' }, [E('summary', {}, title), E('p', {}, text)]); }
 		function updateButtons() {
 			buttons.forEach(function(item) { item.node.disabled = busy || (item.write && !canWrite) || !!item.blocked; });
 			Object.keys(fields).forEach(function(key) { fields[key].disabled = busy || !canWrite; });
 			Object.keys(selectors).forEach(function(key) { selectors[key].disabled = busy || !canWrite; });
-			pending.textContent = busy ? _('Operation in progress…') : dirty ? _('Unsaved changes') : '';
+			boot.disabled = busy || !canWrite;
+			pending.textContent = busy ? _('Working…') : dirty ? _('Unsaved changes') : '';
 		}
 		function button(label, callback, write, group, blocked) {
 			var node = E('button', { 'class': 'cbi-button cbi-button-action', 'type': 'button',
@@ -79,8 +87,9 @@ return view.extend({
 		}
 		function showStatus(next) {
 			next = checked(next);
-			status.textContent = (next.running ? _('Service: running') : _('Service: stopped')) + ' · ' +
-				(next.enabled ? _('Boot startup: enabled') : _('Boot startup: disabled'));
+			status.textContent = next.running ? _('Running') : _('Stopped');
+			status.setAttribute('class', 'xr-badge xr-status ' + (next.running ? 'is-success' : ''));
+			bootEnabled = !!next.enabled; boot.checked = bootEnabled;
 		}
 		function launch(action, config, settings, nodes) {
 			ownAction = action;
@@ -99,7 +108,7 @@ return view.extend({
 			])]);
 		}
 		var values = model.read(state.config);
-		var libraryBody = E('div', { 'id': 'xray-node-library' });
+		var libraryBody = E('div', { 'id': 'xray-node-library', 'class': 'xr-node-table' });
 		function testNode(id) {
 			var fingerprint = JSON.stringify(library.nodes[id].outbound);
 			activeTest = { id: id, fingerprint: fingerprint };
@@ -148,11 +157,16 @@ return view.extend({
 				var test = nodeTests[id];
 				if (test && test.fingerprint !== JSON.stringify(node.outbound)) { delete nodeTests[id]; test = null; }
 				var summary = model.overview(JSON.stringify({ outbounds: [node.outbound], routing: {} })).outbounds[0];
-				return [node.alias, summary.protocol + ' · ' + _(summary.endpoint), used.join(', ') || _('Unassigned'),
+				return [E('div', {}, [E('strong', { 'class': 'xr-node-name' }, node.alias),
+					E('span', { 'class': 'xr-muted' }, summary.protocol + ' · ' + _(summary.endpoint))]),
+					used.length ? E('div', {}, used.map(function(tag) { return E('span', { 'class': 'xr-badge' }, tag); })) : E('span', { 'class': 'xr-muted' }, _('Unassigned')),
 					E('span', { 'id': 'xray-node-test-' + id, 'aria-live': 'polite',
-						'class': test && !test.pending ? (test.success ? 'success' : 'error') : '' }, test ? test.message : _('Not tested')),
-					E('div', {}, [button(_('Test'), function() { return testNode(id); }, true, 'library'), ' ',
+						'title': test ? test.message : '',
+						'class': 'xr-badge ' + (test ? (test.pending ? 'is-pending' : test.success ? 'is-success' : 'is-error') : '') },
+						test ? (test.pending ? _('Testing…') : test.success ? test.message.replace(/\s*\(HTTPS 204\)$/, '') : _('Failed')) : _('Not tested')),
+					E('div', { 'class': 'xr-actions' }, [button(_('Test'), function() { return testNode(id); }, true, 'library'),
 						button(_('Edit'), function() { editNode(id, false); }, true, 'library'), ' ',
+						E('details', { 'class': 'xr-menu' }, [E('summary', { 'aria-label': _('More actions for ') + node.alias }, _('More ▾')), E('div', { 'class': 'xr-menu-panel' }, [
 						button(_('Duplicate'), function() { editNode(id, true); }, true, 'library'), ' ',
 						button(_('Delete'), function() {
 							ui.showModal(_('Delete proxy node'), [E('p', {}, _('Remove this node from the draft? Save & Apply saves the deletion.')),
@@ -161,24 +175,25 @@ return view.extend({
 									if (busy || !canWrite || model.assigned(library, id).length) return;
 									delete library.nodes[id]; dirty = true; refreshLibrary(); refreshOverview(); updateButtons(); ui.hideModal();
 								} }, _('Delete node'))]);
-						}, true, 'library', used.length > 0)])];
+						}, true, 'library', used.length > 0)])])])];
 			});
-			libraryBody.replaceChildren(rows.length ? table([_('Alias'), _('Protocol / endpoint'), _('Assigned to'), _('Connectivity'), _('Actions')], rows) :
+			libraryBody.replaceChildren(rows.length ? table([_('Node'), _('Assigned to'), _('Connectivity'), _('Actions')], rows) :
 				E('p', {}, _('No proxy nodes yet. Add a node, then assign it in Routing.')));
 			updateButtons();
 		}
 
 		var activeTab = 'routing', inspectorReady = false, inspectorLoading = false;
-		var overview = E('section', { 'class': 'cbi-section', 'id': 'xray-route-map' });
+		var builtinsOpen = false;
+		var overview = E('div', { 'id': 'xray-route-map' });
 		function entries() {
 			var result = {}; Object.keys(fields).forEach(function(key) { result[key] = fields[key].value; });
 			return result;
 		}
 		function table(headers, rows) {
-			return E('div', { 'style': 'overflow:auto' }, E('table', { 'class': 'table', 'style': 'width:100%' }, [
+			return E('div', { 'class': 'xr-table-wrap' }, E('table', { 'class': 'table' }, [
 				E('thead', {}, E('tr', { 'class': 'tr table-titles' }, headers.map(function(label) { return E('th', { 'class': 'th', 'scope': 'col' }, label); }))),
 				E('tbody', {}, rows.map(function(cells) { return E('tr', { 'class': 'tr' }, cells.map(function(cell) {
-					return E('td', { 'class': 'td', 'style': 'text-align:left;vertical-align:top;overflow-wrap:anywhere;max-width:32em;white-space:normal' }, cell);
+					return E('td', { 'class': 'td' }, cell);
 				})); }))
 			]));
 		}
@@ -209,11 +224,16 @@ return view.extend({
 					})));
 				selector.value = library.bindings[tag]; selectors[tag] = selector;
 				var node = library.nodes[selector.value];
-				return [tag, selector, node ? model.overview(JSON.stringify({ outbounds: [node.outbound], routing: {} })).outbounds[0].endpoint : _('Blocked / unconfigured')];
+				return E('div', { 'class': 'xr-assignment' }, [E('label', { 'for': 'xray-bind-' + tag }, tag), selector,
+					E('span', { 'class': 'xr-muted' }, node ? model.overview(JSON.stringify({ outbounds: [node.outbound], routing: {} })).outbounds[0].endpoint : _('Blocked / unconfigured'))]);
 			});
-			var content = [E('h3', {}, _('Routes and outbound mappings')), E('p', {}, message),
+			var content = [E('section', { 'class': 'xr-card' }, [
+				E('div', { 'class': 'xr-section-head' }, E('div', {}, [E('h3', {}, _('Outbound assignments')),
+					E('p', { 'class': 'xr-muted' }, _('Choose which node each outbound tag uses.'))])),
 				state.nodes_notice ? E('p', { 'class': 'alert-message warning' }, state.nodes_notice) : '',
-				E('p', {}, _('LAN traffic first passes the kernel bypass rules for local, reserved and proxy-server addresses. CN IPv4 fast path, when enabled, also runs before these Xray rules.')),
+				E('div', { 'class': 'xr-assignments' }, assignments),
+				help(_('How assignments work'), _('One node can serve several tags. Save & Apply activates changes. Global DNS uses proxy-main; backup selection applies to the client-traffic balancer.'))]),
+				E('section', { 'class': 'xr-card' }, [E('div', { 'class': 'xr-section-head' }, E('div', {}, [E('h3', {}, _('Routing rules')), E('p', { 'class': 'xr-muted' }, message)])),
 				table([_('Order / rule'), _('Match conditions'), _('Outbound / proxy node')], mapping.rules.map(function(rule) {
 					var balancer = mapping.balancers.filter(function(item) { return item.tag === rule.target; })[0];
 					var route = rule.balancer && balancer ? [rule.target + ' (' + balancer.strategy + ')']
@@ -222,25 +242,24 @@ return view.extend({
 						E('div', { 'style': 'white-space:pre-wrap' }, rule.conditions.join('\n') || _('Any traffic')),
 						E('div', { 'style': 'white-space:pre-wrap' }, route)];
 				})),
-				E('h3', {}, _('Outbound tags → configuration')),
-				table([_('Outbound tag'), _('Proxy node'), _('Server / behavior')], assignments),
-				E('p', {}, _('Choose a named node for each tag. One node can serve several tags. Changes take effect on Save & Apply.')),
+				help(_('About rule priority'), _('Rules run from top to bottom; the first match wins. Kernel bypass for local, reserved, proxy-server and enabled CN IPv4 destinations happens before these Xray rules.')),
+				E('details', { 'class': 'xr-help', 'open': builtinsOpen ? '' : null, 'toggle': function(event) { builtinsOpen = event.target.open; } }, [E('summary', {}, _('Built-in outbound details')),
 				table([_('Built-in outbound'), _('Protocol'), _('Server / behavior'), _('Chained through')], mapping.outbounds.filter(function(node) { return model.proxyTags.indexOf(node.tag) < 0; }).map(function(node) {
 					return [node.tag, node.protocol, _(node.endpoint), node.via || '—'];
-				})),
-				E('p', {}, _('Proxy node credentials are edited in Proxy Nodes. Global DNS uses proxy-main; backup selection applies to the client-traffic balancer.'))];
+				}))])])];
 			overview.replaceChildren.apply(overview, content);
 			updateButtons();
 		}
 		var routingPanel = E('div', { 'id': 'xray-panel-routing', 'role': 'tabpanel', 'aria-labelledby': 'xray-tab-routing' }, [
 			overview,
-			E('section', { 'class': 'cbi-section' }, [E('h3', {}, _('Routing')),
+			E('section', { 'class': 'xr-card' }, [E('h3', {}, _('Domain overrides')), E('div', { 'class': 'xr-form-grid' }, [
+				field('direct', _('Force-direct domains'), values.direct, _('One domain per line; domain: and full: are supported.'), 'textarea'),
+				field('proxy', _('Force-proxy domains'), values.proxy, _('Leave blank if no override is needed.'), 'textarea')])]),
+			E('details', { 'class': 'xr-card xr-disclosure' }, [E('summary', {}, _('Advanced routing')),
 				field('LAN_INTERFACES', _('LAN interfaces'), state.settings.LAN_INTERFACES, _('Space-separated device names, for example br-lan br-guest.')),
 				field('ENABLE_CN_FASTPATH', _('CN IPv4 fast path'), state.settings.ENABLE_CN_FASTPATH, _('When enabled, CN IPs bypass Xray before force-proxy domain rules.'), [['1', _('Enabled')], ['0', _('Disabled')]]),
-				field('IPV6_MODE', _('Global IPv6'), state.settings.IPV6_MODE, '', [['block', _('Block')], ['bypass', _('Bypass proxy')]]),
-				field('direct', _('Force-direct domains'), values.direct, _('One domain per line. Xray prefixes such as domain: and full: are accepted.'), 'textarea'),
-				field('proxy', _('Force-proxy domains'), values.proxy, _('Leave blank to use an inert .invalid placeholder.'), 'textarea')]),
-			E('section', { 'class': 'cbi-section' }, [E('h3', {}, _('Streaming routes')), E('div', {}, [
+				field('IPV6_MODE', _('Global IPv6'), state.settings.IPV6_MODE, '', [['block', _('Block')], ['bypass', _('Bypass proxy')]])]),
+			E('details', { 'class': 'xr-card xr-disclosure' }, [E('summary', {}, _('Streaming routes')), E('div', {}, [
 				field('stream_enabled', _('Streaming routing'), values.stream_enabled,
 					_('Disabling keeps the node and domain list for later use.'), [['0', _('Disabled')], ['1', _('Enabled')]]),
 				field('stream_domains', _('Streaming domains'), values.stream_domains,
@@ -249,21 +268,18 @@ return view.extend({
 					fields.stream_domains.value = model.streamingPreset(fields.stream_domains.value);
 					dirty = true; updateButtons(); refreshOverview();
 				}),
-				E('p', {}, _('Adds Netflix, Prime Video, HBO/Max, and Disney+ while keeping custom entries. Remove a group to exclude that service. The installed GeoSite database must contain the selected groups.')),
-				E('p', {}, _('Matching connections use this node without fallback. Force-direct rules take priority. Disable CN IPv4 fast path if CN destinations must use this node too.')),
-				E('p', {}, _('Global DNS still uses the primary node. A streaming node in a different region may need matching DNS routing.'))
+				help(_('Streaming routing help'), _('Presets add Netflix, Prime Video, HBO/Max and Disney+ while keeping custom entries. The installed GeoSite database must include these groups. Streaming uses proxy-stream without fallback; force-direct and CN IPv4 bypass take priority. Global DNS still uses the primary node.'))
 			])]),
-			E('section', { 'class': 'cbi-section' }, [E('h3', {}, _('Health checks')),
+			E('details', { 'class': 'xr-card xr-disclosure' }, [E('summary', {}, _('Health checks')),
 				field('probe_url', _('Probe URL'), values.probe_url, _('Use a reliable HTTP(S) endpoint reachable through the primary.')),
 				field('probe_interval', _('Probe interval (seconds)'), values.probe_interval, _('1–3600 seconds. Switching affects new connections after a health check completes.'), 'number'),
-				E('p', {}, _('Client traffic uses the backup while the primary is unhealthy and returns when it recovers. Global DNS continues to use the primary.'))])
+				help(_('About failover'), _('Client traffic uses the backup while the primary is unhealthy and returns when it recovers. Global DNS continues to use the primary.'))])
 		]);
 		var nodesPanel = E('div', { 'id': 'xray-panel-nodes', 'role': 'tabpanel', 'aria-labelledby': 'xray-tab-nodes' }, [
-			E('p', {}, _('Keep your available proxy nodes here with aliases such as us-vps and jp-vps. Choose their outbound assignments in Routing.')),
-			button(_('Add node'), function() { editNode(null, false); }), libraryBody,
-			E('p', {}, _('Test checks HTTPS access to www.gstatic.com/generate_204 through the selected node, including draft edits. Results show total request time, not ping or download speed. Testing does not save changes or restart the service.')),
-			E('p', {}, _('Unassign a node before deleting it. Adding an unused node or renaming an alias does not restart Xray. Assigned node changes apply to every tag using that node.')),
-			E('p', {}, _('Unused nodes are saved as JSON and checked by Xray when assigned and applied.'))
+			E('section', { 'class': 'xr-card' }, [E('div', { 'class': 'xr-section-head' }, [E('div', {}, [E('h3', {}, _('Your proxy nodes')),
+				E('p', { 'class': 'xr-muted' }, _('Manage nodes here. Assign them to outbound tags in Routing.'))]),
+				button(_('Add node'), function() { editNode(null, false); })]), libraryBody,
+				help(_('Testing and editing nodes'), _('Test checks HTTPS access to www.gstatic.com/generate_204 using the current node draft. Time includes connection setup and TLS; it is not ping or download speed. Testing never saves or restarts Xray. Unassign a node before deleting it. Assigned edits take effect for all its tags on Save & Apply; alias-only and unused-node changes do not restart Xray.'))])
 		]);
 		var inspectorPanel = E('div', { 'id': 'xray-panel-inspector', 'role': 'tabpanel', 'aria-labelledby': 'xray-tab-inspector' });
 		var panels = { routing: routingPanel, nodes: nodesPanel, inspector: inspectorPanel };
@@ -301,7 +317,6 @@ return view.extend({
 			[['routing', _('Routing')], ['nodes', _('Proxy Nodes')], ['inspector', _('Inspector')]].map(function(pair, index) {
 				var tab = E('button', { 'id': 'xray-tab-' + pair[0], 'type': 'button', 'role': 'tab',
 					'aria-controls': 'xray-panel-' + pair[0],
-					'style': 'border:0;background:transparent;color:inherit;padding:.7em 1.2em;cursor:pointer;font:inherit',
 					'click': function() { selectTab(pair[0]); },
 					'keydown': function(event) {
 						var next = event.key === 'ArrowRight' ? (index + 1) % 3 : event.key === 'ArrowLeft' ? (index + 2) % 3 :
@@ -313,7 +328,7 @@ return view.extend({
 				var item = E('li', { 'role': 'presentation' }, [tab]); tabItems.push(item); return item;
 			}));
 		var configurationActions = E('div', {}, [
-			E('div', { 'class': 'cbi-page-actions' }, [
+			E('div', { 'class': 'xr-savebar' }, [
 				button(_('Save & Apply'), function() {
 					var entries = {}; Object.keys(fields).forEach(function(key) { entries[key] = fields[key].value; });
 					var config = model.build(state.config, entries, library);
@@ -327,25 +342,26 @@ return view.extend({
 				}, false), ' ', button(_('Restore previous configuration'), function() {
 					if (!state.rollback_available) throw new Error(_('No LuCI rollback copy exists yet.'));
 					confirmAction(_('Restore previous configuration'), _('Restore the configuration and node library saved before the last apply? Runtime changes restart a running service.'), 'rollback');
-				}), E('p', {}, _('Save & Apply saves both tabs with a rollback copy. Runtime changes are validated and restart a running service; library-only changes do not restart it.'))]),
-			E('section', { 'class': 'cbi-section' }, [E('h3', {}, _('Diagnostics')),
+				})]), E('p', { 'class': 'xr-muted' }, _('Applies both tabs. Runtime changes restart Xray; a rollback copy is kept.'))
+		]);
+		diagnostics = E('details', { 'id': 'xray-diagnostics', 'class': 'xr-card xr-disclosure xr-diagnostics' }, [E('summary', {}, _('Diagnostics')),
+			E('div', { 'class': 'xr-actions' }, [
 				button(_('Validate saved configuration'), function() { return launch('validate'); }), ' ',
 				button(_('Doctor'), function() { return launch('doctor'); }), ' ',
 				button(_('Reload firewall'), function() { return launch('firewall-reload'); }), ' ',
-				button(_('Status details'), function() { return getDiagnostics('status').then(function(r) { output.textContent = checked(r).output; }); }, false), ' ',
-				button(_('Logs'), function() { return getDiagnostics('logs').then(function(r) { output.textContent = checked(r).output; }); }, false), output])
+				button(_('Status details'), function() { return getDiagnostics('status').then(function(r) { showOutput(checked(r).output); }); }, false), ' ',
+				button(_('Logs'), function() { return getDiagnostics('logs').then(function(r) { showOutput(checked(r).output); }); }, false)]), output
 		]);
-		var root = E('div', { 'class': 'cbi-map' }, [
-			E('h2', {}, _('Xray Router')), notice, status,
-			E('div', { 'class': 'cbi-section' }, [
+		var root = E('div', { 'class': 'cbi-map xr-app' }, [
+			E('link', { 'rel': 'stylesheet', 'href': L.resource('xray-router/style.css') + '?v=3' }),
+			E('div', { 'class': 'xr-header' }, [E('div', { 'class': 'xr-title' }, [E('h2', {}, _('Xray Router')), status]), pending]), notice,
+			E('div', { 'class': 'xr-toolbar' }, [E('div', { 'class': 'xr-toolbar-group' }, [
 				button(_('Start'), function() { return launch('start'); }), ' ',
 				button(_('Stop'), function() { confirmAction(_('Stop service'), _('Restore the saved dnsmasq configuration and disable transparent interception?'), 'stop'); }), ' ',
-				button(_('Restart'), function() { return launch('restart'); }), ' ',
-				button(_('Enable at boot'), function() { return launch('enable'); }), ' ',
-				button(_('Disable at boot'), function() { return launch('disable'); }), ' ',
-				button(_('Update CN IP list'), function() { return launch('update-cn'); }),
-				E('p', {}, _('Service controls use the saved configuration. Unsaved form edits are applied only by Save & Apply.'))]),
-			tabBar, pending, routingPanel, nodesPanel, inspectorPanel, configurationActions
+				button(_('Restart'), function() { return launch('restart'); })]),
+				E('div', { 'class': 'xr-toolbar-group' }, [E('label', { 'class': 'xr-boot', 'for': 'xray-boot' }, [boot, _('Start on boot')]),
+					button(_('Update CN IP list'), function() { return launch('update-cn'); })])]),
+			tabBar, routingPanel, nodesPanel, inspectorPanel, configurationActions, diagnostics
 		]);
 		refreshLibrary(); selectTab('routing');
 		showStatus(data[1]); updateButtons();
@@ -356,7 +372,7 @@ return view.extend({
 				// A poll sent before start may return the previous operation's result.
 				if (submitting || (activeJob && job.id !== activeJob)) return;
 				if (busy && !job.busy) {
-					busy = false; output.textContent = job.output || _('Operation finished.');
+					busy = false; showOutput(job.output || _('Operation finished.'));
 					if (activeTest) {
 						var tested = job.action === 'test-node' && job.node_test;
 						nodeTests[activeTest.id] = { fingerprint: activeTest.fingerprint, success: !!(tested && tested.success && !job.code),

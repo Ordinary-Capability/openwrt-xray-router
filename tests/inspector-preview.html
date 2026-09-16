@@ -38,7 +38,7 @@ const rpc={declare:spec=>(...args)=>Promise.resolve().then(()=>{
 })};
 const ui={showModal(title,content){const dialog=document.querySelector('#modal');dialog.replaceChildren(E('h3',{},title),...content);dialog.showModal();},hideModal(){document.querySelector('#modal').close();},addNotification(_,node){document.querySelector('main').prepend(node);}};
 fetch('/luci-app-xray-router/htdocs/luci-static/resources/xray-router/inspector.js').then(r=>r.text()).then(async source=>{
-const view=new Function('baseclass','rpc','ui','poll','E','_','L',source)({extend:x=>x},rpc,ui,{add:fn=>setInterval(fn,2000)},E,x=>x,{hasViewPermission:()=>true,url:()=>'/tests/inspector-preview.html'});
+const view=new Function('baseclass','rpc','ui','poll','E','_','L',source)({extend:x=>x},rpc,ui,{add:fn=>setInterval(fn,2000)},E,x=>x,{hasViewPermission:()=>true,url:()=>'/tests/inspector-preview.html',resource:p=>'/luci-app-xray-router/htdocs/luci-static/resources/'+p});
 document.querySelector('#app').append(view.render(await view.load()));
 });
 </script>

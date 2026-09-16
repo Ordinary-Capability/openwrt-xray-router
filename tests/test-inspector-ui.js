@@ -34,7 +34,7 @@ async function test(writable, embedded) {
 		{ extend: value => value }, rpc,
 		{ showModal(title, content) { modal = { title, content }; }, hideModal() {}, addNotification(_, node) { notices.push(node); } },
 		{ add: callback => { poller = callback; } }, E, text => text,
-		{ hasViewPermission: () => writable, url: path => '/cgi-bin/luci/' + path });
+		{ hasViewPermission: () => writable, url: path => '/cgi-bin/luci/' + path, resource: path => '/luci-static/resources/' + path });
 	const context = embedded ? { embedded: true, isActive: () => active, isDirty: () => dirty,
 		onConfigChanged: () => { configRefreshes++; } } : undefined;
 	const tree = view.render(await view.load(), context);

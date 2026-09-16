@@ -41,12 +41,12 @@ in the Windows development environment.
 
 There is one **Services → Xray Router** entry with three tabs:
 
-- **Routing:** ordered Xray rules, their outbound/balancer targets, and the
+- **Routing:** outbound assignment cards first, followed by ordered Xray rules, their outbound/balancer targets, and the
   corresponding node aliases and endpoints. Dropdowns assign library nodes to
   `proxy-main`, `proxy-backup`, and `proxy-stream`. This tab also holds routing, streaming-domain, and health-check
-  settings. Kernel bypass rules take effect before Xray's ordered rules.
+  settings in expandable sections. Kernel bypass rules take effect before Xray's ordered rules.
 - **Proxy Nodes:** a reusable library of named nodes, such as `us-vps` and
-  `jp-vps`, with Add, Edit, Duplicate, and Delete actions. Each node has an alias
+  `jp-vps`, with Test and Edit on each row; Duplicate and Delete are under More. Each node has an alias
   and a complete outbound JSON object, with SOCKS5 and VLESS REALITY templates.
 - **Inspector:** capture traffic for a selected LAN IPv4 device without
   restarting Xray, compare paths, inspect evidence, and export reports. See
@@ -58,6 +58,10 @@ tabs. Inspector log-level changes retain their explicit restart confirmation
 and require saving or discarding any pending configuration edits first.
 The old Inspector URL remains available for bookmarks but has no separate
 Services menu entry. Xray's runtime configuration schema is unchanged.
+
+The header shows service status and progress in a reserved space, so operations
+do not move the tabs or their content. Detailed guidance is under expandable
+help. Inspector keeps Connections and Logging settings permanently visible.
 
 Each row in **Proxy Nodes** has a **Test** button and a Connectivity result.
 Testing uses that node's current draft, including nodes that have not been saved
@@ -76,8 +80,8 @@ until the page reloads; editing a node's outbound clears its previous result.
 
 - **Start, Stop, Restart:** call the existing stack manager. Stop restores the
   saved dnsmasq baseline as it does in the CLI.
-- **Enable/Disable at boot:** control the project's init service.
-- **Update CN IP list:** next to **Disable at boot**, runs `xrayctl update-cn`
+- **Start on boot:** a switch controls the project's init service immediately.
+- **Update CN IP list:** next to **Start on boot**, runs `xrayctl update-cn`
   in the background using the saved `CN_LIST_URL`. The final output appears in
   Diagnostics. It refreshes the active kernel fast path when the service is
   running, without restarting Xray or applying unsaved form edits. Stop an
@@ -87,7 +91,7 @@ until the page reloads; editing a node's outbound clears its previous result.
   For example, `http://192.168.80.2:10809` uses this test VM's Xray HTTP inbound
   and its configured outbound nodes. An explicit proxy never falls back to a
   direct connection; failed downloads retain the previous list.
-- **Primary and backup:** choose nodes under **Outbound tags → configuration**.
+- **Primary and backup:** choose nodes under **Outbound assignments**.
   One library node can serve multiple tags; each runtime copy receives the
   appropriate fixed tag. Templates contain example values to replace. Advanced
   protocol fields are preserved. Node aliases are independent of routing tags.
@@ -103,7 +107,8 @@ until the page reloads; editing a node's outbound clears its previous result.
   domain rules. Bare domains become `domain:` entries. Empty domain lists use
   an inert `.invalid` placeholder so the rule cannot become a catch-all.
 - **Diagnostics:** validate the saved configuration, run doctor, reload the
-  firewall, inspect status details, or read logs.
+  firewall, inspect status details, or read logs. It starts collapsed and opens
+  when an operation returns output or reports an error.
 
 The primary is preferred for client traffic. Global DNS keeps using the
 primary; this UI does not introduce DNS failover. The status indicator reports

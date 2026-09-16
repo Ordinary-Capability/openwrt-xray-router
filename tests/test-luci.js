@@ -148,7 +148,7 @@ async function testView(writable) {
     const view = new Function('view', 'rpc', 'ui', 'poll', 'model', 'inspector', 'E', '_', 'L',
         fs.readFileSync(path.join(resources, 'view/xray-router.js'), 'utf8'))(
         { extend: x => x }, rpc, { addNotification() {}, showModal(title, content) { modal = content; }, hideModal() {} }, { add: cb => { poller = cb; } }, model, inspector, E, x => x,
-        { hasViewPermission: () => writable, url: path => '/cgi-bin/luci/' + path });
+        { hasViewPermission: () => writable, url: path => '/cgi-bin/luci/' + path, resource: path => '/luci-static/resources/' + path });
     const tree = view.render(await view.load());
     const nodes = () => flatten(tree);
     const button = label => nodes().find(n => n.tag === 'button' && n.children === label);
@@ -175,7 +175,10 @@ async function testView(writable) {
     assert.equal(button('Routing').focused, true);
     assert.equal(inspectorContext.isActive(), false);
     const topControls = nodes().filter(n => n.tag === 'button').map(n => n.children);
-    assert.equal(topControls[topControls.indexOf('Disable at boot') + 1], 'Update CN IP list');
+    assert(topControls.includes('Update CN IP list'));
+    assert.equal(field('xray-boot').disabled, !writable);
+    assert.equal(field('xray-boot').checked, false);
+    assert.equal(field('xray-diagnostics').open, undefined, 'diagnostics starts collapsed');
     for (const label of ['Save & Apply', 'Start', 'Add node', 'Edit', 'Duplicate', 'Test', 'Add streaming service presets', 'Update CN IP list'])
         assert.equal(button(label).disabled, !writable, label);
     assert.equal(field('xray-bind-proxy-main').disabled, !writable);
@@ -256,7 +259,9 @@ async function testView(writable) {
     job = { id: currentTestId, busy: false, code: 0, action: 'test-node', output: 'Connected · 123 ms (HTTPS 204)',
         node_test: { success: true, message: 'Connected · 123 ms (HTTPS 204)', latency_ms: 123 } };
     await poller();
-    assert.equal(field('xray-node-test-node-main').children, job.node_test.message);
+    assert.equal(field('xray-node-test-node-main').children, 'Connected · 123 ms');
+    assert.equal(field('xray-node-test-node-main').title, job.node_test.message);
+    assert.equal(field('xray-diagnostics').open, true, 'operation output opens diagnostics');
     assert.equal(button('Test').disabled, false);
     assert.equal(lan.value, 'br-draft', 'node test retains unsaved settings');
     button('Edit').click(); await tick();
@@ -268,8 +273,15 @@ async function testView(writable) {
     assert.deepEqual(JSON.parse(calls.filter(c => c[0] === 'start').at(-1)[1][1]), editedOutbound, 'test sends unsaved node');
     job = { id: job.id, busy: false, code: 1, action: 'test-node', output: 'Connection refused', node_test: { success: false, message: 'Connection refused' } };
     await poller();
-    assert.equal(field('xray-node-test-node-main').children, 'Failed: Connection refused');
+    assert.equal(field('xray-node-test-node-main').children, 'Failed');
+    assert.equal(field('xray-node-test-node-main').title, 'Failed: Connection refused');
     assert.equal(lan.value, 'br-draft');
+    field('xray-boot').checked = true; field('xray-boot').change(); await tick();
+    assert.equal(calls.filter(c => c[0] === 'start').at(-1)[1][0], 'enable');
+    assert.equal(field('xray-boot').disabled, true);
+    job = { id: job.id, busy: false, code: 0, action: 'enable', output: 'enabled' }; await poller();
+    field('xray-boot').checked = false; field('xray-boot').change(); await tick();
+    assert.equal(calls.filter(c => c[0] === 'start').at(-1)[1][0], 'disable');
 }
 Promise.all([testView(true), testView(false)]).then(() => console.log('LuCI model, node library, assignments, drafts, RPC flow and permissions tests passed'))
     .catch(err => { console.error(err); process.exitCode = 1; });

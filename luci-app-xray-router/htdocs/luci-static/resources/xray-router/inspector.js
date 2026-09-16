@@ -30,16 +30,16 @@ return baseclass.extend({
 		var jobBusy = !!checked(data[1]).busy;
 		var pending = false, ownLogging = false;
 		var writable = L.hasViewPermission();
-		var status = E('p', { 'aria-live': 'polite' });
+		var status = E('p', { 'class': 'xr-capture-status', 'aria-live': 'polite' });
 		var warnings = E('div', { 'aria-live': 'polite' });
-		var logStatus = E('p');
-		var logNotices = E('div');
+		var logStatus = E('p', { 'class': 'xr-muted' });
+		var logNotices = E('div', { 'class': 'xr-muted' });
 		var resultBody = E('tbody');
-		var count = E('p', { 'aria-live': 'polite' });
+		var count = E('p', { 'class': 'xr-connection-count', 'aria-live': 'polite' });
 		var controls = [];
 		function error(err) { ui.addNotification(null, E('p', {}, err.message || String(err)), 'error'); }
 		function button(label, fn, kind) {
-			var node = E('button', { 'type': 'button', 'class': 'cbi-button cbi-button-action',
+			var node = E('button', { 'type': 'button', 'class': 'cbi-button cbi-button-action' + (kind === 'start' ? ' xr-primary' : ''),
 				'click': function() { Promise.resolve().then(fn).catch(error); } }, label);
 			controls.push({ node: node, kind: kind });
 			return node;
@@ -133,30 +133,34 @@ return baseclass.extend({
 					} }, _('Apply log level and restart'))])
 			]);
 		}
-		var root = E('div', { 'class': 'cbi-map' }, [
+		var root = E('div', { 'class': context.embedded ? 'xr-inspector' : 'cbi-map xr-app xr-inspector' }, [
+			context.embedded ? '' : E('link', { 'rel': 'stylesheet', 'href': L.resource('xray-router/style.css') + '?v=3' }),
 			context.embedded ? '' : E('h2', {}, _('Xray Traffic Inspector')),
-			E('p', {}, _('Select one LAN device, start a short capture, then reopen the affected app. Capturing does not restart Xray or change routing. Kernel tracing samples new IPv4 TCP/UDP packets; existing/offloaded sessions may not appear.')),
-			E('section', { 'class': 'cbi-section' }, [
-				E('label', { 'for': 'inspect-device' }, _('LAN device IPv4')), ' ', device, deviceList, ' ',
-				E('label', { 'for': 'inspect-duration' }, _('Duration')), ' ', duration, ' ',
-				E('label', { 'for': 'inspect-expected' }, _('Expected path')), ' ', expected,
-				E('p', {}, [button(_('Start capture'), function() {
+			E('section', { 'class': 'xr-card' }, [E('div', { 'class': 'xr-section-head' }, E('div', {}, [E('h3', {}, _('Capture traffic')),
+				E('p', { 'class': 'xr-muted' }, _('Choose a device, start capture, then reopen the affected app.'))])),
+				E('div', { 'class': 'xr-capture-controls' }, [
+				E('div', { 'class': 'xr-control' }, [E('label', { 'for': 'inspect-device' }, _('LAN device IPv4')), device, deviceList]),
+				E('div', { 'class': 'xr-control' }, [E('label', { 'for': 'inspect-duration' }, _('Duration')), duration]),
+				E('div', { 'class': 'xr-control' }, [E('label', { 'for': 'inspect-expected' }, _('Expected path')), expected]),
+				E('div', { 'class': 'xr-actions' }, [button(_('Start capture'), function() {
 					return run(function() { return capture(device.value.trim(), Number(duration.value), expected.value); });
 				}, 'start'), ' ', button(_('Stop / clean up'), function() { return run(function() { return stop(current.id); }); }, 'stop'), ' ',
 				button(_('Download report'), function() {
 					var url = URL.createObjectURL(new Blob([JSON.stringify(current, null, 2)], { type: 'application/json' }));
 					var link = document.createElement('a'); link.href = url; link.download = 'xray-capture-' + current.device + '.json';
 					link.click(); setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-				}, 'download')]), status, warnings]),
-			E('section', { 'class': 'cbi-section' }, [E('h3', {}, _('Connections')),
-				search, ' ', E('label', {}, [problems, ' ', _('Only unexpected paths or errors')]), count,
-				E('div', { 'style': 'overflow:auto' }, E('table', { 'class': 'table' }, [
+				}, 'download')])]), status, warnings,
+				E('details', { 'class': 'xr-help' }, [E('summary', {}, _('Capture limitations')), E('p', {}, _('Capture does not restart Xray or change routing. It samples new IPv4 TCP/UDP packets; existing or offloaded sessions may not appear.'))])]),
+			E('section', { 'class': 'xr-card' }, [E('h3', {}, _('Connections')),
+				E('div', { 'class': 'xr-filterbar' }, [search, E('label', {}, [problems, ' ', _('Only unexpected paths or errors')])]), count,
+				E('div', { 'class': 'xr-table-wrap' }, E('table', { 'class': 'table' }, [
 					E('thead', {}, E('tr', {}, [_('Time'), _('Protocol / source port'), _('Destination'), _('Hostname evidence'), _('Actual path'), _('Rule / kernel decision'), _('Result'), ''].map(function(label) { return E('th', {}, label); }))), resultBody
 				]))]),
-			E('section', { 'class': 'cbi-section' }, [E('h3', {}, _('Logging settings (may restart Xray)')), logStatus, logNotices,
+			E('section', { 'class': 'xr-card' }, [E('h3', {}, _('Logging settings (may restart Xray)')), logStatus, logNotices,
+				E('div', { 'class': 'xr-actions xr-log-actions' }, [
 				button(_('Enable info logging…'), function() { logging('info'); }, 'logging'), ' ',
-				button(_('Restore warning logging…'), function() { logging('warning'); }, 'logging'),
-				E('p', {}, _('Logs use the existing destinations. The default system log is a bounded RAM ring. DNS associations require dnsmasq query logging to already be enabled; the inspector does not enable it.'))]),
+				button(_('Restore warning logging…'), function() { logging('warning'); }, 'logging')]),
+				E('details', { 'class': 'xr-help' }, [E('summary', {}, _('About logging')), E('p', {}, _('Logs use the existing destinations. The default system log is a bounded RAM ring. DNS associations require dnsmasq query logging to already be enabled; the inspector does not enable it.'))])]),
 			context.embedded ? '' : E('p', {}, E('a', { 'href': L.url('admin/services/xray-router') }, _('Open Xray Router settings')))
 		]);
 		update();
