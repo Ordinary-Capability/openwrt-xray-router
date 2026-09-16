@@ -54,6 +54,9 @@ rm -f /usr/libexec/rpcd/luci.xray-router \
     /www/luci-static/resources/xray-router/model.js \
     /www/luci-static/resources/xray-router/inspector.js \
     /www/luci-static/resources/xray-router/style.css
+rm -f /www/luci-static/resources/view/xray-router-v*.js \
+    /www/luci-static/resources/view/xray-router-inspector-v*.js
+rm -rf /www/luci-static/resources/xray-router/v[0-9a-f]*
 rmdir /www/luci-static/resources/xray-router 2>/dev/null || true
 rm -f /tmp/luci-indexcache*
 [ ! -x /etc/init.d/rpcd ] || /etc/init.d/rpcd restart

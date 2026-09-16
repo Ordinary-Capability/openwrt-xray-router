@@ -379,6 +379,8 @@ policy_check() {
 }
 
 policy_up() {
+    [ "$#" -le 1 ] || die "Usage: policy.sh up [--no-check]"
+    case "${1:-}" in ''|--no-check) ;; *) die "Usage: policy.sh up [--no-check]" ;; esac
     require_command fw4
     require_command ip
     acquire_lock
@@ -388,7 +390,11 @@ policy_up() {
     trap 'rm -f "$temp" "$previous"; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT HUP INT TERM
 
     render_nft "$temp"
-    check_generated_with_fw4 "$temp" || die "fw4 rejected the generated nftables configuration"
+    # Start/restart skips the preflight. The real firewall reload below still
+    # has to accept the generated rules, and a failed reload restores the include.
+    if [ "${1:-}" != --no-check ]; then
+        check_generated_with_fw4 "$temp" || die "fw4 rejected the generated nftables configuration"
+    fi
     ensure_policy_route
 
     ensure_include_link
@@ -467,11 +473,11 @@ main() {
             printf '%s\n' "$target"
             ;;
         check) policy_check ;;
-        up) policy_up ;;
+        up) policy_up "$@" ;;
         down) policy_down ;;
         status) policy_status ;;
         *)
-            printf '%s\n' "Usage: $0 {render [FILE]|check|up|down|status}" >&2
+            printf '%s\n' "Usage: $0 {render [FILE]|check|up [--no-check]|down|status}" >&2
             exit 2
             ;;
     esac

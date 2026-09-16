@@ -21,7 +21,7 @@ load_project_settings() {
     [ -r "$SETTINGS_FILE" ] && . "$SETTINGS_FILE"
 }
 
-validate_service() {
+start_service() {
     load_project_settings
     [ -x "$PROG" ] || {
         logger -t xray-router "missing executable: $PROG"
@@ -31,14 +31,8 @@ validate_service() {
         logger -t xray-router "missing configuration: $CONFIG_FILE"
         return 1
     }
-    XRAY_LOCATION_ASSET="$XRAY_ASSET_DIR" \
-        "$PROG" run -test -config "$CONFIG_FILE"
-}
-
-start_service() {
-    load_project_settings
-    validate_service || return 1
-
+    # Xray parses its configuration when the real process starts. An explicit
+    # xrayctl validate (and LuCI Save & Apply) performs the separate dry run.
     procd_open_instance xray-router
     procd_set_param command "$PROG" run -config "$CONFIG_FILE"
     procd_set_param env XRAY_LOCATION_ASSET="$XRAY_ASSET_DIR"
@@ -52,7 +46,7 @@ start_service() {
 }
 
 service_started() {
-    if ! "$POLICY_SCRIPT" up; then
+    if ! "$POLICY_SCRIPT" up --no-check; then
         logger -t xray-router "failed to install transparent-proxy policy; stopping Xray"
         procd_kill xray-router
         return 1

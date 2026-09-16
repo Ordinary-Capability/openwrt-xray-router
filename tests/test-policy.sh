@@ -13,6 +13,8 @@ cp "$ROOT/config/settings.conf" "$ROOT/config/cn-ipv4.txt" \
 cat > "$TEST_DIR/bin/fw4" <<'EOF'
 #!/bin/sh
 [ "$1" = "check" ]
+printf '%s\n' check >> "${XRAY_TEST_STATE:?}/fw4.log"
+[ ! -f "$XRAY_TEST_STATE/reject-check" ]
 EOF
 
 cat > "$TEST_DIR/bin/ip" <<'EOF'
@@ -46,6 +48,7 @@ cat > "$TEST_DIR/firewall" <<'EOF'
 #!/bin/sh
 [ "$1" = "reload" ]
 printf '%s\n' reload >> "${XRAY_TEST_STATE:?}/firewall.log"
+[ ! -f "$XRAY_TEST_STATE/reject-reload" ]
 EOF
 
 chmod +x "$TEST_DIR/bin/fw4" "$TEST_DIR/bin/ip" "$TEST_DIR/bin/nft" "$TEST_DIR/firewall"
@@ -71,4 +74,38 @@ sh "$ROOT/src/policy.sh" down >/dev/null
 [ ! -e "$TEST_DIR/route" ]
 [ "$(wc -l < "$TEST_DIR/firewall.log" | tr -d ' ')" -eq 2 ]
 
-printf '%s\n' 'policy lifecycle test passed'
+# Lifecycle activation can skip the dry run while still applying the rules.
+# Explicit validation must still run fw4 check, preserve the prior include,
+# and never reload the active firewall.
+touch "$TEST_DIR/reject-check"
+sh "$ROOT/src/policy.sh" up --no-check >/dev/null
+[ "$(wc -l < "$TEST_DIR/fw4.log" | tr -d ' ')" -eq 1 ]
+cp "$XRAY_ROUTER_NFT_RUNTIME_DIR/30-xray-router.nft" "$TEST_DIR/include.before"
+if sh "$ROOT/src/policy.sh" check > "$TEST_DIR/check.output" 2>&1; then
+    printf '%s\n' 'explicit validation did not reject invalid firewall rules' >&2
+    exit 1
+fi
+cmp "$TEST_DIR/include.before" "$XRAY_ROUTER_NFT_RUNTIME_DIR/30-xray-router.nft"
+[ "$(wc -l < "$TEST_DIR/firewall.log" | tr -d ' ')" -eq 3 ]
+[ "$(wc -l < "$TEST_DIR/fw4.log" | tr -d ' ')" -eq 2 ]
+
+# If the actual reload rejects a candidate, the previous include and routes
+# survive. Starting from a stopped state must remove newly added policy routes.
+touch "$TEST_DIR/reject-reload"
+if sh "$ROOT/src/policy.sh" up --no-check > "$TEST_DIR/reload.output" 2>&1; then
+    printf '%s\n' 'activation falsely reported success after firewall rejection' >&2
+    exit 1
+fi
+cmp "$TEST_DIR/include.before" "$XRAY_ROUTER_NFT_RUNTIME_DIR/30-xray-router.nft"
+[ -f "$TEST_DIR/rule" ] && [ -f "$TEST_DIR/route" ]
+rm -f "$TEST_DIR/reject-reload"
+sh "$ROOT/src/policy.sh" down >/dev/null
+touch "$TEST_DIR/reject-reload"
+if sh "$ROOT/src/policy.sh" up --no-check > "$TEST_DIR/reload.output" 2>&1; then
+    printf '%s\n' 'fresh activation falsely reported success after firewall rejection' >&2
+    exit 1
+fi
+[ ! -e "$XRAY_ROUTER_NFT_RUNTIME_DIR/30-xray-router.nft" ]
+[ ! -e "$TEST_DIR/rule" ] && [ ! -e "$TEST_DIR/route" ]
+
+printf '%s\n' 'policy lifecycle, explicit validation and reload failure tests passed'

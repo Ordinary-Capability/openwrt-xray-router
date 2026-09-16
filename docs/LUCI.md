@@ -26,9 +26,12 @@ If the service scripts are already up to date, install just the page:
 sh scripts/install-luci.sh
 ```
 
-The installer refreshes rpcd and clears LuCI's generated menu cache. Log out
-of LuCI and back in; refresh the browser if upgrading an existing UI. Xray is
-not started or restarted by installation. Existing service configuration is
+The installer refreshes rpcd and clears LuCI's generated menu cache. Reload
+the page after upgrading; sign in again if prompted. The script gives the view,
+JavaScript dependencies and stylesheet content-versioned URLs, so an ordinary
+reload fetches updated assets even when LuCI's own release version is unchanged.
+Previous asset bundles remain available to pages already open during an upgrade
+and are removed by the uninstaller. Xray is not started or restarted by installation. Existing service configuration is
 preserved. Older installations need the primary/backup configuration described
 in the README merged first.
 
@@ -79,7 +82,15 @@ worker dies. Active Xray, routing, and saved files are unchanged. Results last
 until the page reloads; editing a node's outbound clears its previous result.
 
 - **Start, Stop, Restart:** call the existing stack manager. Stop restores the
-  saved dnsmasq baseline as it does in the CLI.
+  saved dnsmasq baseline as it does in the CLI. Start and Restart skip separate
+  Xray and firewall preflight tests; use **Validate saved configuration** before
+  restarting after manual edits. The real Xray process and firewall reload still
+  parse their configuration and can fail. Save & Apply keeps its validation.
+  DNS setup skips rewriting/restarting dnsmasq when its requested upstream,
+  `noresolv` and cache settings already match, there are no pending DHCP UCI
+  edits, and dnsmasq is running. Log-level and proxy-node changes normally
+  leave DNS running. Changed DNS settings or a stopped dnsmasq still trigger
+  a restart; Stop restores the baseline when needed.
 - **Start on boot:** a switch controls the project's init service immediately.
 - **Update CN IP list:** next to **Start on boot**, runs `xrayctl update-cn`
   in the background using the saved `CN_LIST_URL`. The final output appears in
@@ -109,6 +120,14 @@ until the page reloads; editing a node's outbound clears its previous result.
 - **Diagnostics:** validate the saved configuration, run doctor, reload the
   firewall, inspect status details, or read logs. It starts collapsed and opens
   when an operation returns output or reports an error.
+
+**Validate saved configuration** runs `xray run -test` and a firewall dry run.
+The firewall step renders the project's TProxy/CN include, temporarily places
+it where fw4 reads it, and runs `fw4 check` against the complete ruleset. It
+then restores the previous include (or removes the temporary one). It does
+not reload the live firewall or edit `/etc/config/firewall`; it can create the
+project's include symlink when that link is missing. Starting the service still
+installs the policy route and reloads the firewall to activate interception.
 
 The primary is preferred for client traffic. Global DNS keeps using the
 primary; this UI does not introduce DNS failover. The status indicator reports

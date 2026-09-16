@@ -9,6 +9,8 @@ SETTINGS_FILE="$CONF_DIR/settings.conf"
 CN_FILE="$CONF_DIR/cn-ipv4.txt"
 BACKUP_DIR="$CONF_DIR/backups"
 DHCP_BACKUP="$BACKUP_DIR/dhcp.before-xray-router"
+DHCP_CONFIG="/etc/config/dhcp"
+DNSMASQ_INIT_SCRIPT="/etc/init.d/dnsmasq"
 INIT_SCRIPT="/etc/init.d/xray-router"
 POLICY_SCRIPT="/usr/libexec/xray-router/policy.sh"
 
@@ -76,25 +78,39 @@ check_other_xray() {
     fi
 }
 
+dnsmasq_config_matches() {
+    [ "$(uci -q get 'dhcp.@dnsmasq[0].noresolv' || true)" = 1 ] &&
+        [ "$(uci -q get 'dhcp.@dnsmasq[0].server' || true)" = "127.0.0.1#$XRAY_DNS_PORT" ] &&
+        [ "$(uci -q get 'dhcp.@dnsmasq[0].cachesize' || true)" = "$DNSMASQ_CACHE_SIZE" ] &&
+        [ -z "$(uci -q changes dhcp)" ]
+}
+
 dnsmasq_apply() {
     need_root
     need_command uci
-    [ -r /etc/config/dhcp ] || die "missing /etc/config/dhcp"
+    [ -r "$DHCP_CONFIG" ] || die "missing $DHCP_CONFIG"
     uci -q get 'dhcp.@dnsmasq[0]' >/dev/null \
         || die "no dnsmasq section found in /etc/config/dhcp"
 
-    mkdir -p "$BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR" || return 1
     if [ ! -e "$DHCP_BACKUP" ]; then
-        cp -p /etc/config/dhcp "$DHCP_BACKUP"
+        cp -p "$DHCP_CONFIG" "$DHCP_BACKUP" || return 1
         say "saved dnsmasq baseline to $DHCP_BACKUP"
     fi
 
-    uci set 'dhcp.@dnsmasq[0].noresolv=1'
-    uci -q delete 'dhcp.@dnsmasq[0].server' || true
-    uci add_list "dhcp.@dnsmasq[0].server=127.0.0.1#$XRAY_DNS_PORT"
-    uci set "dhcp.@dnsmasq[0].cachesize=$DNSMASQ_CACHE_SIZE"
-    uci commit dhcp
-    /etc/init.d/dnsmasq restart
+    if dnsmasq_config_matches; then
+        if "$DNSMASQ_INIT_SCRIPT" running >/dev/null 2>&1; then
+            say "dnsmasq already uses the requested settings; no restart needed"
+            return 0
+        fi
+    else
+        uci set 'dhcp.@dnsmasq[0].noresolv=1' || return 1
+        uci -q delete 'dhcp.@dnsmasq[0].server' || true
+        uci add_list "dhcp.@dnsmasq[0].server=127.0.0.1#$XRAY_DNS_PORT" || return 1
+        uci set "dhcp.@dnsmasq[0].cachesize=$DNSMASQ_CACHE_SIZE" || return 1
+        uci commit dhcp || return 1
+    fi
+    "$DNSMASQ_INIT_SCRIPT" restart || return 1
     say "dnsmasq now caches and forwards Internet DNS to Xray at 127.0.0.1:$XRAY_DNS_PORT"
 }
 
@@ -104,8 +120,13 @@ dnsmasq_restore() {
         warn "no saved dnsmasq baseline exists; nothing was restored"
         return 0
     fi
-    cp -p "$DHCP_BACKUP" /etc/config/dhcp
-    /etc/init.d/dnsmasq restart
+    if cmp -s "$DHCP_BACKUP" "$DHCP_CONFIG" &&
+        "$DNSMASQ_INIT_SCRIPT" running >/dev/null 2>&1; then
+        say "dnsmasq baseline is already active; no restart needed"
+        return 0
+    fi
+    cp -p "$DHCP_BACKUP" "$DHCP_CONFIG" || return 1
+    "$DNSMASQ_INIT_SCRIPT" restart || return 1
     say "restored the pre-project dnsmasq configuration"
 }
 
@@ -113,14 +134,13 @@ dnsmasq_save_baseline() {
     need_root
     service_running && die "stop xray-router before replacing the dnsmasq baseline"
     mkdir -p "$BACKUP_DIR"
-    cp -p /etc/config/dhcp "$DHCP_BACKUP"
+    cp -p "$DHCP_CONFIG" "$DHCP_BACKUP"
     say "saved the current dnsmasq configuration as the restore baseline"
 }
 
 start_stack() {
     need_root
     load_settings
-    validate_all
     if proxy_is_placeholder && [ "$ALLOW_BLACKHOLE_PROXY" != "1" ]; then
         die "replace the proxy-main outbound, or explicitly set ALLOW_BLACKHOLE_PROXY=1"
     fi
@@ -168,7 +188,6 @@ stop_stack() {
 restart_stack() {
     need_root
     load_settings
-    validate_all
     if proxy_is_placeholder && [ "$ALLOW_BLACKHOLE_PROXY" != "1" ]; then
         die "replace the proxy-main outbound, or explicitly set ALLOW_BLACKHOLE_PROXY=1"
     fi
@@ -324,9 +343,9 @@ usage() {
 Usage: xrayctl COMMAND [ARG]
 
 Stack:
-  start                 Validate, start Xray/TProxy, then apply dnsmasq
+  start                 Start Xray/TProxy, then apply dnsmasq (no preflight)
   stop                  Restore dnsmasq, then stop Xray/TProxy
-  restart               Validate and restart the active stack
+  restart               Restart the active stack (no preflight)
   status                Show service, DNS, policy-route, and nftables state
   enable | disable      Enable or disable boot-time service startup
 

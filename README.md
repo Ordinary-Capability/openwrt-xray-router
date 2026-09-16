@@ -342,11 +342,17 @@ xrayctl logs 100
 
 `start` performs one coherent operation:
 
-1. Validate Xray and fw4.
-2. Start Xray under procd.
-3. Install the policy route and generated fw4 include.
-4. Save a one-time `/etc/config/dhcp` baseline.
-5. Point dnsmasq at `127.0.0.1#1053` and restart dnsmasq.
+1. Start Xray under procd.
+2. Install the policy route and generated fw4 include.
+3. Save a one-time `/etc/config/dhcp` baseline.
+4. Point dnsmasq at `127.0.0.1#1053`. Restart dnsmasq only if the requested
+   settings differ, DHCP UCI edits are pending, or the daemon is stopped.
+
+`start` and `restart` do not run separate Xray or firewall preflight tests.
+Use `xrayctl validate` (or LuCI's **Validate saved configuration**) before
+restarting after manual configuration edits. Xray and nftables still parse
+configuration when loading it, so an invalid configuration can fail to start.
+LuCI **Save & Apply** continues to validate changes before installing them.
 
 Test from one LAN client:
 
