@@ -80,7 +80,7 @@ async function testView(writable) {
 	const view = new Function('view', 'rpc', 'ui', 'poll', 'model', 'E', '_', 'L',
 		fs.readFileSync(path.join(resources, 'view/xray-router.js'), 'utf8'))(
 		{ extend: x => x }, rpc, { addNotification() {}, showModal(title, content) { modal = content; }, hideModal() {} }, { add: cb => { poller = cb; } }, model, E, x => x,
-		{ hasViewPermission: () => writable });
+		{ hasViewPermission: () => writable, url: path => '/cgi-bin/luci/' + path });
 	const tree = view.render(await view.load());
 	const nodes = flatten(tree);
 	const button = label => nodes.find(n => n.tag === 'button' && n.children === label);

@@ -360,6 +360,12 @@ diagnostics, and validated Save & Apply with rollback. DNS routing stays as
 configured. See [LuCI installation and recovery](docs/LUCI.md) for the complete
 instructions and test coverage.
 
+**Services → Xray Traffic Inspector** captures one LAN device for 30–120
+seconds and shows destination IP/domain evidence, selected outbound, matched
+rule when logged, and sampled kernel bypass decisions. Capture never restarts
+Xray. Optional info logging is a separate confirmed restart action. See
+[Traffic Inspector](docs/TRAFFIC-INSPECTOR.md) for usage and limitations.
+
 `xrayctl stop` restores the saved pre-project dnsmasq file before stopping Xray
 and removing interception. Because restoration is a full-file restore, do not
 make unrelated `/etc/config/dhcp` edits while this stack is active. If you want

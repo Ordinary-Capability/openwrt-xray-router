@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Traffic Inspector preview — simulated data</title>
+<style>
+body{font:14px system-ui,sans-serif;background:#f4f5f6;color:#263238;margin:0;padding:24px}main{max-width:1400px;margin:auto}h2{font-size:26px}h3{font-size:18px}p{line-height:1.55}.cbi-section{background:white;border:1px solid #dce0e2;padding:18px;margin:18px 0;border-radius:5px}button,input,select,.cbi-button{font:inherit;padding:7px 10px;border:1px solid #bcc6cb;border-radius:4px;background:white}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}.cbi-button-action{background:#e8f3fa;color:#145581}.cbi-button-negative{background:#a32424;color:white}.alert-message.warning{background:#fff4d7}table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;padding:11px 8px;border-bottom:1px solid #e3e7e9;max-width:230px;overflow-wrap:anywhere}th{color:#546e7a}#inspect-filter{width:330px}dialog{border:1px solid #aaa;border-radius:6px;max-width:900px}pre{overflow-wrap:anywhere}.right{text-align:right}summary{cursor:pointer;font-weight:600}label{display:inline-block;margin:4px}a{color:#176691}.preview-note{background:#e7eef5;padding:12px}
+</style>
+<main><p class="preview-note">Development preview: simulated device and connection data. No router is contacted.</p><div id="app"></div></main>
+<dialog id="modal"></dialog>
+<script>
+function E(tag, attrs, children) {
+  if (typeof attrs === 'string' || Array.isArray(attrs)) { children=attrs; attrs={}; }
+  const node=document.createElement(tag);
+  for(const [key,value] of Object.entries(attrs||{})) {
+    if(typeof value==='function') node.addEventListener(key,value);
+    else if(value!==null) node.setAttribute(key,value);
+  }
+  function append(value){if(Array.isArray(value))value.forEach(append);else if(value!=null)node.append(value instanceof Node?value:document.createTextNode(String(value)));}
+  append(children);return node;
+}
+const stamp=Date.now()/1000;
+let state={id:'preview',active:false,device:'192.168.1.100',expected:'proxy-stream',duration:60,started:stamp-60,finished:stamp,warnings:[],rows:[
+ {id:1,source:'192.168.1.100',source_port:50100,network:'tcp',destination:'8.8.8.8',port:443,domain:'api.example.com',domain_evidence:'sniffed',rule:'DEFAULT-PROXY',kernel:'TPROXY',path:'proxy-main',mismatch:true,outcome:'Selected; outcome unknown',last:stamp-8,evidence:[{kind:'xray-route',text:'Hit route rule: [DEFAULT-PROXY] so taking detour [proxy-main]'}]},
+ {id:2,source:'192.168.1.100',source_port:50101,network:'udp',destination:'1.2.3.4',port:443,kernel:'CN-FASTPATH',path:'kernel-direct',mismatch:true,outcome:'Kernel bypass; outcome unknown',last:stamp-7,evidence:[]},
+ {id:3,source:'192.168.1.100',source_port:50102,network:'tcp',destination:'8.8.4.4',port:443,domain:'media.example.com',domain_evidence:'sniffed',rule:'STREAMING-PROXY',path:'proxy-stream',outcome:'Error logged',error:'failed to open connection: timeout',last:stamp-3,evidence:[]}
+]};
+let level='warning',job={busy:false};
+const rpc={declare:spec=>(...args)=>Promise.resolve().then(()=>{
+  if(spec.object==='luci.xray-inspector'){
+    if(spec.method==='options')return{devices:[{name:'Living room TV',ip:state.device}],loglevel:level,notices:[],capture:state};
+    if(spec.method==='capture')state={...state,active:true,started:Date.now()/1000,expires:Date.now()/1000+args[1],device:args[0],expected:args[2]};
+    if(spec.method==='stop')state={...state,active:false,finished:Date.now()/1000};
+    return state;
+  }
+  if(spec.method==='get')return{revision:'preview'};
+  if(spec.method==='start'){level=args[0].replace('logging-','');job={busy:false,code:0,output:'Simulated logging change.'};}
+  return job;
+})};
+const ui={showModal(title,content){const dialog=document.querySelector('#modal');dialog.replaceChildren(E('h3',{},title),...content);dialog.showModal();},hideModal(){document.querySelector('#modal').close();},addNotification(_,node){document.querySelector('main').prepend(node);}};
+fetch('/luci-app-xray-router/htdocs/luci-static/resources/view/xray-router-inspector.js').then(r=>r.text()).then(async source=>{
+const view=new Function('view','rpc','ui','poll','E','_','L',source)({extend:x=>x},rpc,ui,{add:fn=>setInterval(fn,2000)},E,x=>x,{hasViewPermission:()=>true,url:()=>'/tests/inspector-preview.html'});
+document.querySelector('#app').append(view.render(await view.load()));
+});
+</script>

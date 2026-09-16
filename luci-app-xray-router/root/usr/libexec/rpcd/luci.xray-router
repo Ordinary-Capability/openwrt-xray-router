@@ -36,6 +36,7 @@ local backend = dofile("/usr/libexec/xray-router/ui.lua").new({
     atomic = atomic, remove = fs.unlink,
     running = function() return test("/etc/init.d/xray-router running") end,
     enabled = function() return test("/etc/init.d/xray-router enabled") end,
+    capture_active = function() return fs.stat("/tmp/xray-router-inspector/lock") ~= nil end,
     revision = function()
         local code, value = command("sha256sum /etc/xray-router/config.json /etc/xray-router/settings.conf")
         assert(code == 0, "Cannot fingerprint configuration")

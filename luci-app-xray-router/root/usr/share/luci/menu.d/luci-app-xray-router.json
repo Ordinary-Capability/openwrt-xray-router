@@ -4,5 +4,11 @@
     "order": 60,
     "action": { "type": "view", "path": "xray-router" },
     "depends": { "acl": ["luci-app-xray-router"], "fs": { "/usr/sbin/xrayctl": "executable" } }
+  },
+  "admin/services/xray-router-inspector": {
+    "title": "Xray Traffic Inspector",
+    "order": 61,
+    "action": { "type": "view", "path": "xray-router-inspector" },
+    "depends": { "acl": ["luci-app-xray-router"], "fs": { "/usr/sbin/xrayctl": "executable" } }
   }
 }

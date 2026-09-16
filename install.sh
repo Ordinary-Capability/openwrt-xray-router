@@ -19,6 +19,7 @@ say() { printf '%s\n' "$*"; }
 [ "$(id -u)" = "0" ] || die "run this installer as root"
 [ -r /etc/openwrt_release ] || die "this installer targets OpenWrt"
 [ ! -d /tmp/xray-router-ui/lock ] || die "wait for the LuCI management operation to finish before installing"
+[ ! -d /tmp/xray-router-inspector/lock ] || die "stop / clean up the traffic capture before installing"
 [ "$WITH_LUCI" -eq 0 ] || sh "$PROJECT_DIR/scripts/install-luci.sh" --check
 
 for cmd in xray fw4 nft ip uci jsonfilter; do

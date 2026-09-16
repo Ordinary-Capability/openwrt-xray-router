@@ -23,13 +23,15 @@ class BackendTest(unittest.TestCase):
         self.validation_fails = False
         self.restart_failures = 0
         self.write_failure = None
+        self.capture_running = False
         deps = self.lua.table_from({
             'conf': self.conf, 'work': self.work, 'read': self.fs.get,
             'mkdir': lambda _: None, 'remove': lambda p: self.fs.pop(p, None),
             'atomic': self.atomic, 'running': lambda: self.running,
             'enabled': lambda: False, 'revision': lambda _: self.revision(),
+            'capture_active': lambda: self.capture_running,
             'run': self.run_command,
-            'json': self.lua.table_from({'parse': self.parse})})
+            'json': self.lua.table_from({'parse': self.parse, 'stringify': lambda data: json.dumps(self.from_lua(data))})})
         self.backend = self.lua.execute(BACKEND.read_text(encoding='utf-8')).new(deps)
         self.perform = self.lua.eval('function(backend, request) return pcall(backend.perform, request) end')
         self.original = self.snapshot()
@@ -46,6 +48,14 @@ class BackendTest(unittest.TestCase):
             return self.table(json.loads(text))
         except ValueError:
             return None
+
+    def from_lua(self, value):
+        if hasattr(value, 'items'):
+            items = dict(value.items())
+            if items and all(isinstance(k, int) for k in items):
+                return [self.from_lua(items[k]) for k in sorted(items)]
+            return {k: self.from_lua(v) for k, v in items.items()}
+        return value
 
     def revision(self):
         return hashlib.sha256(''.join(self.snapshot().values()).encode()).hexdigest()
@@ -278,6 +288,38 @@ class BackendTest(unittest.TestCase):
     def test_unknown_action_rejected(self):
         self.assertFalse(self.call({'action': 'stop; reboot'})[0])
         self.assertFalse(self.calls)
+
+    def test_logging_action_changes_only_level_and_stopped_service_stays_stopped(self):
+        ok, result = self.call({'action': 'logging-info', 'revision': self.revision()})
+        self.assertTrue(ok, result)
+        self.assertEqual(result['code'], 0)
+        expected = json.loads(self.original['config.json'])
+        expected['log']['loglevel'] = 'info'
+        self.assertEqual(json.loads(self.fs[self.conf + '/config.json']), expected)
+        self.assertEqual([c[0] for c in self.calls], ['validate'])
+        self.assertEqual(self.fs[self.conf + '/settings.conf'], self.original['settings.conf'])
+
+    def test_logging_restart_failure_rolls_back_and_capture_blocks_log_changes(self):
+        self.running = True
+        self.restart_failures = 1
+        ok, result = self.call({'action': 'logging-info', 'revision': self.revision()})
+        self.assertTrue(ok)
+        self.assertEqual(result['code'], 1)
+        self.assertEqual(self.snapshot(), self.original)
+        self.capture_running = True
+        for action in ['logging-info', 'logging-warning', 'restart', 'firewall-reload', 'rollback']:
+            self.assertFalse(self.call({'action': action, 'revision': self.revision()})[0])
+        self.assertFalse(self.call(self.request())[0])
+        self.assertTrue(self.call({'action': 'stop'})[0], 'emergency service stop must stay available')
+
+    def test_logging_requires_current_revision_and_cannot_be_changed_by_normal_save(self):
+        self.assertFalse(self.call({'action': 'logging-info', 'revision': 'stale'})[0])
+        request = self.request()
+        config = json.loads(request['config'])
+        config['log']['loglevel'] = 'info'
+        request['config'] = json.dumps(config)
+        self.assertFalse(self.call(request)[0])
+        self.assertEqual(self.snapshot(), self.original)
 
     def test_rollback_and_interrupted_transaction_recovery(self):
         self.assertTrue(self.call(self.request())[0])

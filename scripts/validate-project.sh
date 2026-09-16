@@ -32,6 +32,7 @@ sh "$ROOT/tests/test-restart.sh"
 
 if command -v node >/dev/null 2>&1; then
     node "$ROOT/tests/test-luci.js"
+    node "$ROOT/tests/test-inspector-ui.js"
 fi
 
 printf '%s\n' 'project static validation passed'

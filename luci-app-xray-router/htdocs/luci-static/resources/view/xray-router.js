@@ -105,6 +105,7 @@ return view.extend({
 		}
 		var root = E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, _('Xray Router')), notice, status,
+			E('p', {}, E('a', { 'class': 'cbi-button cbi-button-action', 'href': L.url('admin/services/xray-router-inspector') }, _('Traffic Inspector'))),
 			E('div', { 'class': 'cbi-section' }, [
 				button(_('Start'), function() { return launch('start'); }), ' ',
 				button(_('Stop'), function() { confirmAction(_('Stop service'), _('Restore the saved dnsmasq configuration and disable transparent interception?'), 'stop'); }), ' ',

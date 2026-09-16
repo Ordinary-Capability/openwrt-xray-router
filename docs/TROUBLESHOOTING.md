@@ -2,6 +2,13 @@
 
 ## First checks
 
+For an application failing on one LAN device, use **Services → Xray Traffic
+Inspector**. Select the device and expected path, capture for 60 seconds, and
+reopen the application. The report distinguishes Xray route selection from
+kernel CN bypasses and logged connection errors. Starting/stopping capture
+never restarts Xray; changing its log level is a separate confirmed operation.
+See [the capture guide](TRAFFIC-INSPECTOR.md).
+
 ```sh
 xrayctl doctor
 xrayctl validate

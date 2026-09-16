@@ -231,6 +231,20 @@ function M.new(d)
     end
     function self.perform(request)
         local action = request.action
+        local changes_stack = { save=true, rollback=true, start=true, restart=true,
+            ["firewall-reload"]=true, ["logging-info"]=true, ["logging-warning"]=true }
+        if changes_stack[action] and d.capture_active then
+            check(not d.capture_active(), "Stop the traffic capture before changing the running stack")
+        end
+        if action == "logging-info" or action == "logging-warning" then
+            check(not d.read(pending), "Interrupted apply detected; restore the previous configuration first")
+            local candidate = snapshot()
+            local config = parse(candidate["config.json"])
+            config.log = config.log or {}
+            config.log.loglevel = action == "logging-info" and "info" or "warning"
+            candidate["config.json"] = d.json.stringify(config) .. "\n"
+            return apply(candidate, request.revision)
+        end
         if action == "save" then
             check(not d.read(pending), "Interrupted apply detected; restore the previous configuration first")
             local previous = snapshot()

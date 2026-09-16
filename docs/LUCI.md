@@ -39,6 +39,12 @@ in the Windows development environment.
 
 ## Controls
 
+The separate **Services → Xray Traffic Inspector** page captures traffic for a
+selected LAN IPv4 device without restarting Xray. It provides path comparison,
+kernel bypass evidence, correlated Xray logs, and report export. Changing log
+levels is an explicit, separately confirmed action that restarts a running
+service. See [Traffic Inspector](TRAFFIC-INSPECTOR.md).
+
 - **Start, Stop, Restart:** call the existing stack manager. Stop restores the
   saved dnsmasq baseline as it does in the CLI.
 - **Enable/Disable at boot:** control the project's init service.

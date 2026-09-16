@@ -1,0 +1,21 @@
+#!/usr/bin/lua
+local json = require "luci.jsonc"
+if arg[1] == "list" then
+    print('{"options":{},"get":{},"capture":{"device":"","duration":60,"expected":""},"stop":{"id":""}}')
+    return
+end
+local runtime = dofile("/usr/libexec/xray-router/inspector-runtime.lua")
+if arg[1] == "worker" then runtime.worker(arg[2]); return end
+if arg[1] == "call" then
+    local ok, result = pcall(function()
+        local raw = io.read(4097) or "{}"
+        assert(#raw <= 4096, "Request too large")
+        local request = assert(json.parse(raw), "Invalid request")
+        if arg[2] == "options" then return runtime.options()
+        elseif arg[2] == "get" then return runtime.get()
+        elseif arg[2] == "capture" then return runtime.start(request)
+        elseif arg[2] == "stop" then return runtime.stop(request) end
+        error("Unknown inspector method")
+    end)
+    print(json.stringify(ok and result or { error = tostring(result) }))
+end

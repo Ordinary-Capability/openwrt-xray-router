@@ -8,6 +8,7 @@ case "${1:-}" in ''|--check) ;; *) die "Usage: $0 [--check]" ;; esac
 [ "$(id -u)" = 0 ] || die "run as root on OpenWrt"
 [ -r /etc/openwrt_release ] || die "this installer targets OpenWrt"
 [ ! -d /tmp/xray-router-ui/lock ] || die "wait for the LuCI management operation to finish before installing"
+[ ! -d /tmp/xray-router-inspector/lock ] || die "stop / clean up the traffic capture before installing"
 [ -d /www/luci-static/resources ] || die "install luci-base first"
 [ -x /etc/init.d/rpcd ] || die "install rpcd first"
 command -v lua >/dev/null 2>&1 || die "install lua, luci-lib-jsonc and luci-lib-nixio first"
@@ -19,12 +20,18 @@ command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required (normally pro
 mkdir -p /usr/libexec/xray-router /usr/libexec/rpcd /usr/share/rpcd/acl.d \
     /usr/share/luci/menu.d /www/luci-static/resources/xray-router /www/luci-static/resources/view
 cp "$APP/root/usr/libexec/xray-router/ui.lua" /usr/libexec/xray-router/ui.lua
+cp "$APP/root/usr/libexec/xray-router/inspector.lua" /usr/libexec/xray-router/inspector.lua
+cp "$APP/root/usr/libexec/xray-router/inspector-runtime.lua" /usr/libexec/xray-router/inspector-runtime.lua
 cp "$APP/root/usr/libexec/rpcd/luci.xray-router" /usr/libexec/rpcd/luci.xray-router
+cp "$APP/root/usr/libexec/rpcd/luci.xray-inspector" /usr/libexec/rpcd/luci.xray-inspector
 cp "$APP/root/usr/share/rpcd/acl.d/luci-app-xray-router.json" /usr/share/rpcd/acl.d/
 cp "$APP/root/usr/share/luci/menu.d/luci-app-xray-router.json" /usr/share/luci/menu.d/
 cp "$APP/htdocs/luci-static/resources/xray-router/model.js" /www/luci-static/resources/xray-router/
 cp "$APP/htdocs/luci-static/resources/view/xray-router.js" /www/luci-static/resources/view/
-chmod 0755 /usr/libexec/rpcd/luci.xray-router
+cp "$APP/htdocs/luci-static/resources/view/xray-router-inspector.js" /www/luci-static/resources/view/
+chmod 0755 /usr/libexec/rpcd/luci.xray-router /usr/libexec/rpcd/luci.xray-inspector
+chmod 0644 /usr/libexec/xray-router/inspector.lua /usr/libexec/xray-router/inspector-runtime.lua \
+    /www/luci-static/resources/view/xray-router-inspector.js
 chmod 0644 /usr/libexec/xray-router/ui.lua /usr/share/rpcd/acl.d/luci-app-xray-router.json \
     /usr/share/luci/menu.d/luci-app-xray-router.json /www/luci-static/resources/xray-router/model.js \
     /www/luci-static/resources/view/xray-router.js
