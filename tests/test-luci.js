@@ -147,9 +147,13 @@ async function testView(writable) {
         render(data, context) { inspectorContext = context; return E('div', { id: 'inspector-stub' }); } };
     const view = new Function('view', 'rpc', 'ui', 'poll', 'model', 'inspector', 'E', '_', 'L',
         fs.readFileSync(path.join(resources, 'view/xray-router.js'), 'utf8'))(
-        { extend: x => x }, rpc, { addNotification() {}, showModal(title, content) { modal = content; }, hideModal() {} }, { add: cb => { poller = cb; } }, model, inspector, E, x => x,
+        { extend: x => x }, rpc, { addNotification() {}, showModal(title, content) { modal = content; }, hideModal() {} }, { add: (cb, interval) => { assert.equal(interval, 1); poller = cb; } }, model, inspector, E, x => x,
         { hasViewPermission: () => writable, url: path => '/cgi-bin/luci/' + path, resource: path => '/luci-static/resources/' + path });
     const tree = view.render(await view.load());
+    await poller();
+    const idleCalls = calls.length;
+    await poller();
+    assert.equal(calls.length, idleCalls, 'idle status polling is throttled');
     const nodes = () => flatten(tree);
     const button = label => nodes().find(n => n.tag === 'button' && n.children === label);
     const field = id => nodes().find(n => n.id === id);

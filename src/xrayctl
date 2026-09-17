@@ -153,7 +153,6 @@ start_stack() {
             "$INIT_SCRIPT" stop >/dev/null 2>&1 || true
             die "xray-router start command failed; inspect: xrayctl logs"
         fi
-        sleep 1
         if ! service_running; then
             "$INIT_SCRIPT" stop >/dev/null 2>&1 || true
             die "xray-router failed to stay running; inspect: xrayctl logs"
@@ -198,7 +197,6 @@ restart_stack() {
         "$INIT_SCRIPT" stop >/dev/null 2>&1 || true
         die "xray-router restart command failed; inspect: xrayctl logs"
     fi
-    sleep 1
     if ! service_running; then
         [ "$MANAGE_DNSMASQ" = "1" ] && dnsmasq_restore || true
         "$INIT_SCRIPT" stop >/dev/null 2>&1 || true
@@ -335,7 +333,7 @@ doctor() {
 show_logs() {
     lines="${1:-100}"
     case "$lines" in ''|*[!0-9]*) die "log line count must be numeric" ;; esac
-    logread -e xray-router | tail -n "$lines"
+    logread -e xray | tail -n "$lines"
 }
 
 usage() {
@@ -351,6 +349,7 @@ Stack:
 
 Configuration and maintenance:
   validate              Test Xray JSON and generated fw4 configuration
+  firewall-check        Test only generated fw4 configuration
   doctor                Check dependencies, assets, conflicts, and forwarding
   logs [LINES]           Show recent procd/logread messages (default: 100)
   firewall-reload       Regenerate and reload only the interception layer
@@ -374,6 +373,7 @@ main() {
         enable) need_root; "$INIT_SCRIPT" enable; say "autostart enabled" ;;
         disable) need_root; "$INIT_SCRIPT" disable; say "autostart disabled" ;;
         validate) validate_all "$@" ;;
+        firewall-check) load_settings; "$POLICY_SCRIPT" check ;;
         doctor) doctor "$@" ;;
         logs) show_logs "$@" ;;
         firewall-reload) need_root; "$POLICY_SCRIPT" up ;;

@@ -29,6 +29,7 @@ return baseclass.extend({
 		var current = info.capture || {};
 		var jobBusy = !!checked(data[1]).busy;
 		var pending = false, ownLogging = false;
+		var nextPollAt = 0, activeLogJob = null, submittingLog = false;
 		var writable = L.hasViewPermission();
 		var status = E('p', { 'class': 'xr-capture-status', 'aria-live': 'polite' });
 		var warnings = E('div', { 'aria-live': 'polite' });
@@ -127,9 +128,13 @@ return baseclass.extend({
 					E('button', { 'class': 'cbi-button cbi-button-negative', 'click': function() {
 						ui.hideModal();
 						if (context.isDirty && context.isDirty()) { error(new Error(_('Save or reload your Routing and Proxy Nodes edits before changing logging.'))); return; }
-						jobBusy = true; ownLogging = true; update();
+						jobBusy = true; ownLogging = true; submittingLog = true; activeLogJob = null; nextPollAt = 0; update();
 						getConfig().then(checked).then(function(config) { return startJob('logging-' + level, '', config.revision, {}); }).then(checked)
-							.catch(function(err) { jobBusy = false; ownLogging = false; update(); error(err); });
+							.then(function(job) {
+								activeLogJob = job.id; submittingLog = false;
+								if (context.onJobStarted) context.onJobStarted(job);
+							})
+							.catch(function(err) { jobBusy = false; ownLogging = false; submittingLog = false; update(); error(err); });
 					} }, _('Apply log level and restart'))])
 			]);
 		}
@@ -166,11 +171,14 @@ return baseclass.extend({
 		update();
 		poll.add(function() {
 			if (context.isActive && !context.isActive() && !current.active && !ownLogging && !pending) return Promise.resolve();
+			if (!current.active && !jobBusy && !pending && Date.now() < nextPollAt) return Promise.resolve();
+			nextPollAt = Date.now() + 5000;
 			return Promise.all([getCapture(), getJob()]).then(function(values) {
 				current = checked(values[0]); var job = checked(values[1]);
+				if (submittingLog || (activeLogJob && job.id !== activeLogJob)) return;
 				jobBusy = !!job.busy;
 				if (ownLogging && !jobBusy) {
-					ownLogging = false;
+					ownLogging = false; activeLogJob = null;
 					ui.addNotification(null, E('p', {}, job.output || _('Logging operation finished')), job.code ? 'error' : 'info');
 					return options().then(checked).then(function(next) {
 						info = next; update();
@@ -179,7 +187,7 @@ return baseclass.extend({
 				}
 				update();
 			}).catch(function(err) { status.textContent = _('Inspector unavailable: ') + (err.message || err); });
-		}, 2);
+		}, 1);
 		return root;
 	}
 });

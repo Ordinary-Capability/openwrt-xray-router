@@ -24,6 +24,7 @@ class BackendTest(unittest.TestCase):
         self.restart_failures = 0
         self.write_failure = None
         self.capture_running = False
+        self.jsonc_empty_arrays = False
         deps = self.lua.table_from({
             'conf': self.conf, 'work': self.work, 'read': self.fs.get,
             'mkdir': lambda _: None, 'remove': lambda p: self.fs.pop(p, None),
@@ -53,6 +54,8 @@ class BackendTest(unittest.TestCase):
     def from_lua(self, value):
         if hasattr(value, 'items'):
             items = dict(value.items())
+            if not items and self.jsonc_empty_arrays:
+                return []  # OpenWrt luci.jsonc serializes every empty Lua table as [].
             if items and all(isinstance(k, int) for k in items):
                 return [self.from_lua(items[k]) for k in sorted(items)]
             return {k: self.from_lua(v) for k, v in items.items()}
@@ -73,7 +76,7 @@ class BackendTest(unittest.TestCase):
 
     def run_command(self, action, directory=None):
         self.calls.append((action, directory))
-        if action == 'validate':
+        if action == 'firewall-check':
             self.assertNotEqual(directory, self.conf)
             candidate = json.loads(self.fs[directory + '/config.json'])
             self.assertEqual(candidate['dns'], json.loads(self.original['config.json'])['dns'])
@@ -127,7 +130,7 @@ class BackendTest(unittest.TestCase):
         self.assertIn('MANAGE_DNSMASQ="1"', self.fs[self.conf + '/settings.conf'])
         self.assertIn('LAN_INTERFACES="br-lan br-guest"', self.fs[self.conf + '/settings.conf'])
         self.assertEqual(self.fs[self.conf + '/backups/luci-last/config.json'], self.original['config.json'])
-        self.assertEqual([c[0] for c in self.calls], ['validate'])
+        self.assertEqual([c[0] for c in self.calls], ['firewall-check'])
         self.assertNotIn(self.conf + '/backups/luci-pending', self.fs)
 
     def test_running_save_restarts(self):
@@ -135,7 +138,34 @@ class BackendTest(unittest.TestCase):
         ok, result = self.call(self.request())
         self.assertTrue(ok)
         self.assertEqual(result['code'], 0)
-        self.assertEqual([c[0] for c in self.calls], ['validate', 'restart'])
+        self.assertEqual([c[0] for c in self.calls], ['firewall-check', 'restart'])
+
+    def test_xray_only_save_skips_preflight_and_rolls_back_startup_failure(self):
+        self.running = True
+        request = self.request()
+        request['settings'] = self.backend.get()['settings']
+        config = json.loads(request['config'])
+        config['outbounds'][0]['protocol'] = 'unsupported-protocol'
+        request['config'] = json.dumps(config)
+        self.restart_failures = 1
+        ok, result = self.call(request)
+        self.assertTrue(ok, result)
+        self.assertEqual(result['code'], 1)
+        self.assertIn('Previous configuration restored', result['output'])
+        self.assertEqual([c[0] for c in self.calls], ['restart', 'restart'])
+        self.assertEqual(self.snapshot(), self.original)
+
+    def test_stopped_xray_only_save_defers_validation_until_start(self):
+        request = self.request()
+        request['settings'] = self.backend.get()['settings']
+        config = json.loads(request['config'])
+        config['outbounds'][0]['protocol'] = 'unsupported-protocol'
+        request['config'] = json.dumps(config)
+        ok, result = self.call(request)
+        self.assertTrue(ok, result)
+        self.assertEqual(result['code'], 0)
+        self.assertIn('checked on next start', result['output'])
+        self.assertEqual(self.calls, [])
 
     def test_validation_failure_never_writes_live_files(self):
         self.validation_fails = True
@@ -152,7 +182,7 @@ class BackendTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(result['code'], 1)
         self.assertEqual(self.snapshot(), self.original)
-        self.assertEqual([c[0] for c in self.calls], ['validate', 'restart', 'restart'])
+        self.assertEqual([c[0] for c in self.calls], ['firewall-check', 'restart', 'restart'])
 
     def test_partial_commit_restores_both_files(self):
         self.write_failure = self.conf + '/settings.conf'
@@ -354,8 +384,69 @@ class BackendTest(unittest.TestCase):
         expected = json.loads(self.original['config.json'])
         expected['log']['loglevel'] = 'info'
         self.assertEqual(json.loads(self.fs[self.conf + '/config.json']), expected)
-        self.assertEqual([c[0] for c in self.calls], ['validate'])
+        self.assertEqual(self.calls, [])
         self.assertEqual(self.fs[self.conf + '/settings.conf'], self.original['settings.conf'])
+
+    def test_logging_preserves_raw_json_with_openwrt_empty_table_encoding(self):
+        self.jsonc_empty_arrays = True
+        self.running = True
+        config = json.loads(self.original['config.json'])
+        config['inbounds'].append({'tag': 'http-in', 'listen': '192.168.80.2',
+                                  'port': 10809, 'protocol': 'http', 'settings': {}})
+        config['log']['access'] = 'path/with/"quotes"/and\\slashes/{},[]:loglevel'
+        config['unrelated'] = {'loglevel': 'warning', 'empty_object': {}, 'empty_array': [],
+                               'nullable': None, 'integer': 9007199254740993,
+                               'nested': [{}, [], {'log': {'loglevel': 'warning'}}]}
+        raw = json.dumps(config, indent=2) + '\n'
+        self.assertEqual(self.from_lua(self.parse(raw))['inbounds'][-1]['settings'], [])
+        for escaped in (False, True):
+            with self.subTest(escaped_keys=escaped):
+                original = raw.replace('"log":', '"lo\\u0067":', 1) if escaped else raw
+                original = original.replace('"loglevel":', '"log\\u006cevel":', 1) if escaped else original
+                self.fs[self.conf + '/config.json'] = original
+                self.original = self.snapshot()
+                ok, result = self.call({'action': 'logging-info', 'revision': self.revision()})
+                self.assertTrue(ok, result)
+                self.assertEqual(result['code'], 0)
+                self.assertEqual(self.fs[self.conf + '/config.json'], original.replace('"warning"', '"info"', 1))
+                ok, result = self.call({'action': 'logging-warning', 'revision': self.revision()})
+                self.assertTrue(ok, result)
+                self.assertEqual(result['code'], 0)
+                self.assertEqual(self.snapshot(), self.original)
+
+    def test_logging_creates_missing_log_object_or_level(self):
+        for log in ('missing', None, {}, {'access': 'none', 'dnsLog': False}):
+            with self.subTest(log=log):
+                config = json.loads(self.original['config.json'])
+                config.pop('log', None)
+                if log != 'missing':
+                    config['log'] = log
+                self.fs[self.conf + '/config.json'] = json.dumps(config)
+                ok, result = self.call({'action': 'logging-info', 'revision': self.revision()})
+                self.assertTrue(ok, result)
+                self.assertEqual(result['code'], 0)
+                config['log'] = {**(log if isinstance(log, dict) else {}), 'loglevel': 'info'}
+                self.assertEqual(json.loads(self.fs[self.conf + '/config.json']), config)
+
+    def test_logging_rejects_ambiguous_duplicate_members(self):
+        original = self.original['config.json']
+        for raw in (original.replace('"log":', '"log": {}, "lo\\u0067":', 1),
+                    original.replace('"loglevel":', '"loglevel": "error", "log\\u006cevel":', 1)):
+            self.fs[self.conf + '/config.json'] = raw
+            before = self.snapshot()
+            ok, error = self.call({'action': 'logging-info', 'revision': self.revision()})
+            self.assertFalse(ok)
+            self.assertIn('Duplicate JSON member', str(error))
+            self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.calls, [])
+
+    def test_logging_unchanged_level_does_not_restart(self):
+        self.running = True
+        ok, result = self.call({'action': 'logging-warning', 'revision': self.revision()})
+        self.assertTrue(ok, result)
+        self.assertEqual(result['code'], 0)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.snapshot(), self.original)
 
     def test_logging_restart_failure_rolls_back_and_capture_blocks_log_changes(self):
         self.running = True
@@ -447,7 +538,7 @@ class BackendTest(unittest.TestCase):
         ok, result = self.call(request)
         self.assertTrue(ok, result)
         self.assertEqual(result['code'], 0)
-        self.assertEqual([c[0] for c in self.calls], ['validate', 'restart'])
+        self.assertEqual([c[0] for c in self.calls], ['restart'])
         saved = json.loads(self.fs[self.conf + '/config.json'])
         self.assertEqual(saved['routing'], json.loads(self.original['config.json'])['routing'])
         self.assertEqual(saved['inbounds'], json.loads(self.original['config.json'])['inbounds'])
@@ -499,7 +590,7 @@ class BackendTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(result['code'], 1)
         self.assertEqual(self.snapshot(), before)
-        self.assertEqual([c[0] for c in self.calls], ['validate', 'restart', 'restart'])
+        self.assertEqual([c[0] for c in self.calls], ['restart', 'restart'])
 
     def test_metadata_rollback_and_old_backups_without_library(self):
         self.seed_host_node()

@@ -27,13 +27,13 @@ async function test(writable, embedded) {
 			return Promise.resolve(current);
 		}
 		if (spec.method === 'get') return Promise.resolve({ revision: 'revision1' });
-		if (spec.method === 'start') job = { busy: true };
+		if (spec.method === 'start') job = { busy: true, id: 'logging-1' };
 		return Promise.resolve(job);
 	} };
 	const view = new Function('baseclass', 'rpc', 'ui', 'poll', 'E', '_', 'L', source)(
 		{ extend: value => value }, rpc,
 		{ showModal(title, content) { modal = { title, content }; }, hideModal() {}, addNotification(_, node) { notices.push(node); } },
-		{ add: callback => { poller = callback; } }, E, text => text,
+		{ add: (callback, interval) => { assert.equal(interval, 1); poller = callback; } }, E, text => text,
 		{ hasViewPermission: () => writable, url: path => '/cgi-bin/luci/' + path, resource: path => '/luci-static/resources/' + path });
 	const context = embedded ? { embedded: true, isActive: () => active, isDirty: () => dirty,
 		onConfigChanged: () => { configRefreshes++; } } : undefined;
@@ -96,12 +96,19 @@ async function test(writable, embedded) {
 	modal.content.flatMap(flatten).find(node => node.children === 'Apply log level and restart').click(); await tick();
 	assert.equal(calls.find(call => call.object === 'luci.xray-router' && call.method === 'start').args[0], 'logging-info');
 	assert.equal(button('Start capture').disabled, true);
-	job = { busy: false, code: 0, output: 'Logging changed and service restarted.' };
+	job = { busy: false, id: 'previous-job', code: 0, output: 'Stale result' };
+	await poller();
+	assert.equal(button('Start capture').disabled, true, 'stale result cannot finish logging');
+	job = { busy: false, id: 'logging-1', code: 0, output: 'Logging changed and service restarted.' };
 	active = false;
 	await poller();
 	assert.equal(button('Start capture').disabled, false);
 	assert.equal(configRefreshes, embedded ? 1 : 0);
 	assert.equal(notices.length, embedded ? 3 : 1);
+	active = true;
+	const idleCalls = calls.length;
+	await poller();
+	assert.equal(calls.length, idleCalls, 'idle Inspector polling is throttled');
 }
 Promise.all([test(true, false), test(false, false), test(true, true), test(false, true)]).then(() => console.log('Inspector UI capture, filtering, permissions, embedded tabs and restart-confirmation tests passed'))
 	.catch(error => { console.error(error); process.exitCode = 1; });

@@ -75,7 +75,7 @@ without a restart may differ from the running process.
 - **Restore warning logging…** changes only `log.loglevel` to `warning`.
 
 Both require a UI confirmation explaining that active proxied connections will
-be interrupted. They use the existing validated Save & Apply/rollback path;
+be interrupted. They use the existing Save & Apply/rollback path;
 a running service restarts and a stopped service stays stopped. Info logging
 remains enabled until explicitly restored. Finishing a capture never switches
 the level back and never triggers a second restart. Custom access/error log

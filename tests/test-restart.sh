@@ -50,6 +50,8 @@ restart_stack >/dev/null
     PROG="$TEST_DIR/xray"
     CONFIG_FILE="$TEST_DIR/config.json"
     POLICY_SCRIPT="$TEST_DIR/policy"
+    READINESS_SCRIPT="$TEST_DIR/readiness"
+    printf 'wait_xray_ready() { return 0; }\n' > "$READINESS_SCRIPT"
     printf '%s\n' '{}' > "$CONFIG_FILE"
     printf '#!/bin/sh\necho unexpected-xray-test >> "%s"\nexit 1\n' "$XRAY_TEST_LOG" > "$PROG"
     printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$XRAY_TEST_LOG" > "$POLICY_SCRIPT"
@@ -64,3 +66,26 @@ restart_stack >/dev/null
     [ "$(cat "$XRAY_TEST_LOG")" = "$(printf 'command %s run -config %s\nup --no-check' "$PROG" "$CONFIG_FILE")" ]
 )
 printf '%s\n' 'start/restart skip preflight tests passed'
+
+# Restart keeps unchanged policy but failure still tears it down. No live procd
+# or firewall is involved; use the real restart and stopped hooks.
+(
+    . "$ROOT/src/xray-router.init"
+    READINESS_SCRIPT="$TEST_DIR/readiness"
+    printf 'xray_service_pid() { echo 123; }\n' > "$READINESS_SCRIPT"
+    POLICY_SCRIPT="$TEST_DIR/policy"
+    printf '#!/bin/sh\n[ "$1" != unchanged ] || exit 0\nprintf "%%s\\n" "$*" >> "%s"\n' "$XRAY_TEST_LOG" > "$POLICY_SCRIPT"
+    chmod +x "$POLICY_SCRIPT"
+    procd_lock() { :; }
+    load_project_settings() { :; }
+    stop() { service_stopped; }
+    start() { printf 'keep=%s\n' "$XRAY_KEEP_POLICY" >> "$XRAY_TEST_LOG"; return "${FAIL_START:-0}"; }
+    : > "$XRAY_TEST_LOG"
+    restart
+    [ "$(cat "$XRAY_TEST_LOG")" = 'keep=1' ]
+    : > "$XRAY_TEST_LOG"
+    FAIL_START=1
+    if restart; then exit 1; fi
+    [ "$(cat "$XRAY_TEST_LOG")" = "$(printf 'keep=1\ndown')" ]
+)
+printf '%s\n' 'unchanged policy restart and failure cleanup tests passed'

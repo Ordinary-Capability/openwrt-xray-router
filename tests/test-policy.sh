@@ -41,7 +41,7 @@ EOF
 
 cat > "$TEST_DIR/bin/nft" <<'EOF'
 #!/bin/sh
-exit 0
+[ ! -f "${XRAY_TEST_STATE:?}/missing-chain" ]
 EOF
 
 cat > "$TEST_DIR/firewall" <<'EOF'
@@ -99,6 +99,22 @@ fi
 cmp "$TEST_DIR/include.before" "$XRAY_ROUTER_NFT_RUNTIME_DIR/30-xray-router.nft"
 [ -f "$TEST_DIR/rule" ] && [ -f "$TEST_DIR/route" ]
 rm -f "$TEST_DIR/reject-reload"
+
+# Same generated policy and live chain skip fw4 reload and its dry run. A
+# changed setting or missing live chain must reload instead of trusting a file.
+before="$(wc -l < "$TEST_DIR/firewall.log")"
+sh "$ROOT/src/policy.sh" unchanged
+sh "$ROOT/src/policy.sh" up --if-needed >/dev/null
+[ "$(wc -l < "$TEST_DIR/firewall.log")" -eq "$before" ]
+touch "$TEST_DIR/missing-chain"
+if sh "$ROOT/src/policy.sh" unchanged; then exit 1; fi
+sh "$ROOT/src/policy.sh" up --if-needed >/dev/null
+[ "$(wc -l < "$TEST_DIR/firewall.log")" -eq "$((before + 1))" ]
+rm "$TEST_DIR/missing-chain"
+printf '\nENABLE_CN_FASTPATH="0"\n' >> "$TEST_DIR/config/settings.conf"
+if sh "$ROOT/src/policy.sh" unchanged; then exit 1; fi
+sh "$ROOT/src/policy.sh" up --if-needed >/dev/null
+[ "$(wc -l < "$TEST_DIR/firewall.log")" -eq "$((before + 2))" ]
 sh "$ROOT/src/policy.sh" down >/dev/null
 touch "$TEST_DIR/reject-reload"
 if sh "$ROOT/src/policy.sh" up --no-check > "$TEST_DIR/reload.output" 2>&1; then

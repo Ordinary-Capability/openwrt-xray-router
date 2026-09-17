@@ -7,7 +7,7 @@ TEMP="$(mktemp /tmp/xray-router-nft.XXXXXX)"
 trap 'rm -f "$TEMP"' EXIT HUP INT TERM
 
 for file in "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/src/xrayctl" \
-            "$ROOT/src/policy.sh" "$ROOT/src/xray-router.init" \
+            "$ROOT/src/policy.sh" "$ROOT/src/xray-router.init" "$ROOT/src/readiness.sh" \
             "$ROOT/tests/test-policy.sh" "$ROOT/tests/test-placeholder.sh" \
             "$ROOT/tests/test-restart.sh" "$ROOT/tests/test-update-cn.sh" \
             "$ROOT/tests/test-dnsmasq.sh" \
@@ -31,6 +31,7 @@ grep -q 'meta nfproto ipv6.*reject' "$TEMP"
 sh "$ROOT/tests/test-policy.sh"
 sh "$ROOT/tests/test-placeholder.sh"
 sh "$ROOT/tests/test-restart.sh"
+sh "$ROOT/tests/test-readiness.sh"
 sh "$ROOT/tests/test-dnsmasq.sh"
 sh "$ROOT/tests/test-update-cn.sh"
 

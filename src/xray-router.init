@@ -14,9 +14,12 @@ CONF_DIR="/etc/xray-router"
 CONFIG_FILE="$CONF_DIR/config.json"
 SETTINGS_FILE="$CONF_DIR/settings.conf"
 POLICY_SCRIPT="/usr/libexec/xray-router/policy.sh"
+READINESS_SCRIPT="/usr/libexec/xray-router/readiness.sh"
 
 load_project_settings() {
     XRAY_ASSET_DIR="/usr/share/xray"
+    XRAY_DNS_PORT=1053
+    TPROXY_PORT=12345
     # shellcheck disable=SC1090
     [ -r "$SETTINGS_FILE" ] && . "$SETTINGS_FILE"
 }
@@ -32,7 +35,7 @@ start_service() {
         return 1
     }
     # Xray parses its configuration when the real process starts. An explicit
-    # xrayctl validate (and LuCI Save & Apply) performs the separate dry run.
+    # xrayctl validate performs the optional separate dry run.
     procd_open_instance xray-router
     procd_set_param command "$PROG" run -config "$CONFIG_FILE"
     procd_set_param env XRAY_LOCATION_ASSET="$XRAY_ASSET_DIR"
@@ -46,7 +49,16 @@ start_service() {
 }
 
 service_started() {
-    if ! "$POLICY_SCRIPT" up --no-check; then
+    . "$READINESS_SCRIPT"
+    if ! wait_xray_ready; then
+        echo "Xray did not become ready; check its configuration and listening ports." >&2
+        logread -e xray | tail -n 20 >&2
+        procd_kill xray-router
+        return 1
+    fi
+    local mode=--no-check
+    [ "${XRAY_KEEP_POLICY:-0}" = 0 ] || mode=--if-needed
+    if ! "$POLICY_SCRIPT" up "$mode"; then
         logger -t xray-router "failed to install transparent-proxy policy; stopping Xray"
         procd_kill xray-router
         return 1
@@ -54,8 +66,28 @@ service_started() {
 }
 
 service_stopped() {
+    [ "${XRAY_KEEP_POLICY:-0}" = 0 ] || return 0
     "$POLICY_SCRIPT" down >/dev/null 2>&1 || \
         logger -t xray-router "warning: transparent-proxy policy cleanup failed"
+}
+
+# Preserve active, unchanged interception during an Xray-only restart. These
+# flags are local to this invocation, never persistent markers left by a crash.
+restart() {
+    local XRAY_KEEP_POLICY=0 XRAY_PREVIOUS_PID
+    procd_lock
+    load_project_settings
+    . "$READINESS_SCRIPT"
+    XRAY_PREVIOUS_PID="$(xray_service_pid)"
+    if [ -n "$XRAY_PREVIOUS_PID" ] && "$POLICY_SCRIPT" unchanged; then
+        XRAY_KEEP_POLICY=1
+    fi
+    stop
+    if ! start; then
+        XRAY_KEEP_POLICY=0
+        stop
+        return 1
+    fi
 }
 
 # Boot through the stack manager so persistent dnsmasq state is repaired even

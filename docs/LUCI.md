@@ -85,7 +85,9 @@ until the page reloads; editing a node's outbound clears its previous result.
   saved dnsmasq baseline as it does in the CLI. Start and Restart skip separate
   Xray and firewall preflight tests; use **Validate saved configuration** before
   restarting after manual edits. The real Xray process and firewall reload still
-  parse their configuration and can fail. Save & Apply keeps its validation.
+  parse their configuration and can fail. Startup waits for the new Xray PID
+  to own all configured TCP listeners and the DNS/TProxy UDP sockets. An
+  unchanged active firewall policy stays installed during ordinary restarts.
   DNS setup skips rewriting/restarting dnsmasq when its requested upstream,
   `noresolv` and cache settings already match, there are no pending DHCP UCI
   edits, and dnsmasq is running. Log-level and proxy-node changes normally
@@ -169,26 +171,33 @@ into a new draft node and displays a notice, retaining the old library node.
 
 Adding unused nodes, changing aliases, or assigning an identical outbound saves
 metadata without changing runtime files or restarting Xray. Changes to assigned
-node contents or routing use the existing validated runtime apply flow. The
+node contents or routing use the runtime apply and recovery flow. The
 library and bindings are included in revision checking, backups, and recovery.
 
 ## Save, apply, and recover
 
 1. The backend rejects changes made from a stale configuration revision.
-2. For runtime changes, candidate files are written under a private temporary
-   directory and checked with `xrayctl validate`, including the fw4 check.
+2. JSON structure, editable fields and node assignments are checked without
+   running Xray. Changed routing settings receive a firewall-only dry run in
+   a private temporary directory. Logging and node-only edits skip that step.
 3. Previous `config.json`, `settings.conf`, and optional `nodes.json` are kept in
    `/etc/xray-router/backups/luci-last/` with restricted permissions.
-4. Validated files replace the current files using individual atomic renames.
+4. Candidate files replace the current files using individual atomic renames.
 5. Runtime changes restart a running service. Library-only changes do not
-   restart it. A stopped service remains stopped.
+   restart it. There is no `xray run -test`: the real startup detects Xray
+   configuration errors. A stopped service remains stopped, and Xray checks
+   its saved configuration on its next start.
 6. If installation or restart fails, the backend restores the previous files
    and attempts to restart the previously running stack. Any failed recovery
    is reported in the diagnostics panel.
 
-**Restore previous configuration** validates and restores the last backup.
-The backup is one level deep. A failed validation does not replace it. A
+**Restore previous configuration** uses the same apply and recovery path.
+The backup is one level deep. A failed firewall check does not replace it. A
 successful ordinary restore retains the pre-restore state as the next backup.
+
+Management progress polls once per second while an operation runs, and every
+five seconds while idle. Inspector uses the faster interval during capture or
+logging changes, and pauses its own polling when its idle tab is hidden.
 
 An interrupted apply leaves `/etc/xray-router/backups/luci-pending`. The UI
 shows a recovery notice and blocks further changes until the backup has been

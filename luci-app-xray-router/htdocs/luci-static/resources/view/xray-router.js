@@ -30,6 +30,7 @@ return view.extend({
 		var busy = !!checked(data[2]).busy;
 		var ownAction = null;
 		var activeJob = null, submitting = false;
+		var nextPollAt = 0;
 		var nodeTests = {}, activeTest = null;
 		var canWrite = L.hasViewPermission();
 		var buttons = [];
@@ -94,6 +95,7 @@ return view.extend({
 		function launch(action, config, settings, nodes) {
 			ownAction = action;
 			activeJob = null; submitting = true;
+			nextPollAt = 0;
 			busy = true; updateButtons(); output.textContent = _('Starting operation…');
 			return startJob(action, config || '', state.revision, settings || {}, nodes || '').then(checked).then(function(job) {
 				activeJob = job.id; submitting = false;
@@ -293,6 +295,7 @@ return view.extend({
 					embedded: true,
 					isActive: function() { return activeTab === 'inspector'; },
 					isDirty: function() { return dirty; },
+					onJobStarted: function(job) { busy = true; activeJob = job.id; nextPollAt = 0; updateButtons(); },
 					onConfigChanged: function() { return getConfig().then(function(next) { if (!dirty) populate(next); }); }
 				}));
 				inspectorReady = true;
@@ -366,6 +369,8 @@ return view.extend({
 		refreshLibrary(); selectTab('routing');
 		showStatus(data[1]); updateButtons();
 		poll.add(function() {
+			if (!busy && Date.now() < nextPollAt) return Promise.resolve();
+			nextPollAt = Date.now() + 5000;
 			return Promise.all([getStatus(), getJob()]).then(function(responses) {
 				showStatus(responses[0]);
 				var job = checked(responses[1]);
@@ -391,7 +396,7 @@ return view.extend({
 				}
 				busy = !!job.busy; updateButtons();
 			}).catch(function(err) { status.textContent = _('Status unavailable: ') + (err.message || err); });
-		}, 2);
+		}, 1);
 		return root;
 	}
 });

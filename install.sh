@@ -22,7 +22,7 @@ say() { printf '%s\n' "$*"; }
 [ ! -d /tmp/xray-router-inspector/lock ] || die "stop / clean up the traffic capture before installing"
 [ "$WITH_LUCI" -eq 0 ] || sh "$PROJECT_DIR/scripts/install-luci.sh" --check
 
-for cmd in xray fw4 nft ip uci jsonfilter; do
+for cmd in xray fw4 nft ip uci jsonfilter netstat ubus; do
     command -v "$cmd" >/dev/null 2>&1 || die "required command not found: $cmd"
 done
 
@@ -36,9 +36,11 @@ mkdir -p "$CONF_DIR" "$CONF_DIR/backups" "$LIBEXEC_DIR"
 
 # Program files are project-owned and are safely refreshed on reinstall.
 cp "$PROJECT_DIR/src/policy.sh" "$LIBEXEC_DIR/policy.sh"
+cp "$PROJECT_DIR/src/readiness.sh" "$LIBEXEC_DIR/readiness.sh"
 cp "$PROJECT_DIR/src/xrayctl" /usr/sbin/xrayctl
 cp "$PROJECT_DIR/src/xray-router.init" /etc/init.d/xray-router
 chmod 0755 "$LIBEXEC_DIR/policy.sh" /usr/sbin/xrayctl /etc/init.d/xray-router
+chmod 0644 "$LIBEXEC_DIR/readiness.sh"
 chmod 0600 "$CONF_DIR/config.json"
 chmod 0644 "$CONF_DIR/settings.conf" "$CONF_DIR/cn-ipv4.txt" \
     "$CONF_DIR/proxy-server-ipv4.txt"

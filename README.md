@@ -342,7 +342,9 @@ xrayctl logs 100
 
 `start` performs one coherent operation:
 
-1. Start Xray under procd.
+1. Start Xray under procd and wait for its own TCP listeners and TCP/UDP
+   DNS/TProxy sockets (a bounded wait, with 100 ms polling when LuCI's Lua/nixio
+   runtime is available, or one-second polling on bare CLI installations).
 2. Install the policy route and generated fw4 include.
 3. Save a one-time `/etc/config/dhcp` baseline.
 4. Point dnsmasq at `127.0.0.1#1053`. Restart dnsmasq only if the requested
@@ -352,7 +354,14 @@ xrayctl logs 100
 Use `xrayctl validate` (or LuCI's **Validate saved configuration**) before
 restarting after manual configuration edits. Xray and nftables still parse
 configuration when loading it, so an invalid configuration can fail to start.
-LuCI **Save & Apply** continues to validate changes before installing them.
+LuCI **Save & Apply** also skips the Xray dry run. A running service applies
+the configuration through its real startup; failure restores the previous
+configuration and restarts it. A stopped service saves changes for its next
+start. Changed firewall settings still receive a firewall-only dry run.
+
+Restarts retain unchanged active interception rules, avoiding full firewall
+reloads for log-level and proxy-node changes. Missing or changed policy uses
+the full policy setup. Explicit **Validate saved configuration** remains available.
 
 Test from one LAN client:
 

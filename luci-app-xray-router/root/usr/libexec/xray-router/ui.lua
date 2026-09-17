@@ -86,6 +86,59 @@ function M.new(d)
         check(type(data) == "table", "Invalid JSON object")
         return data
     end
+    -- luci.jsonc loses the distinction between {} and [] in Lua tables. Splice
+    -- only the requested member so logging changes retain every other byte,
+    -- including empty protocol settings, nulls and large numeric values.
+    local function replace_member(raw, key, update)
+        local function whitespace(pos)
+            while raw:sub(pos, pos):match("%s") do pos = pos + 1 end
+            return pos
+        end
+        local function string_end(pos)
+            check(raw:sub(pos, pos) == '"', "Expected a JSON member name")
+            pos = pos + 1
+            while pos <= #raw do
+                local char = raw:sub(pos, pos)
+                if char == '"' then return pos + 1 end
+                pos = pos + (char == '\\' and 2 or 1)
+            end
+            error("Unterminated JSON string", 0)
+        end
+        local opening = whitespace(1)
+        check(raw:sub(opening, opening) == "{", "Logging settings must be a JSON object")
+        local pos, first, last = whitespace(opening + 1)
+        local has_members = raw:sub(pos, pos) ~= "}"
+        while raw:sub(pos, pos) ~= "}" do
+            local name_end = string_end(pos)
+            local name = parse("[" .. raw:sub(pos, name_end - 1) .. "]")[1]
+            pos = whitespace(name_end)
+            check(raw:sub(pos, pos) == ":", "Expected a JSON member value")
+            local start = whitespace(pos + 1)
+            pos = start
+            local depth = 0
+            while pos <= #raw do
+                local char = raw:sub(pos, pos)
+                if char == '"' then pos = string_end(pos)
+                elseif depth == 0 and (char == "," or char == "}") then break
+                else
+                    if char == "{" or char == "[" then depth = depth + 1
+                    elseif char == "}" or char == "]" then depth = depth - 1 end
+                    pos = pos + 1
+                end
+            end
+            check(pos <= #raw, "Unterminated JSON object")
+            if name == key then
+                check(not first, "Duplicate JSON member: " .. key)
+                first, last = start, pos - 1
+                while raw:sub(last, last):match("%s") do last = last - 1 end
+            end
+            if raw:sub(pos, pos) == "," then pos = whitespace(pos + 1) end
+        end
+        check(whitespace(pos + 1) > #raw, "Unexpected data after JSON object")
+        if first then return raw:sub(1, first - 1) .. update(raw:sub(first, last)) .. raw:sub(last + 1) end
+        return raw:sub(1, opening) .. d.json.stringify(key) .. ":" .. update(nil) ..
+            (has_members and "," or "") .. raw:sub(opening + 1)
+    end
     local function result(code, output) return { code = code, output = output or "" } end
     local function settings(raw)
         local values = { LAN_INTERFACES = "br-lan", ENABLE_CN_FASTPATH = "1", IPV6_MODE = "block" }
@@ -268,7 +321,7 @@ function M.new(d)
         for _, name in ipairs({ "cn-ipv4.txt", "proxy-server-ipv4.txt" }) do
             d.atomic(work .. "/candidate/" .. name, read(conf .. "/" .. name))
         end
-        return d.run("validate", work .. "/candidate")
+        return d.run("firewall-check", work .. "/candidate")
     end
     local function apply(candidate, expected, rollback)
         check(expected == revision(), "Configuration changed since this page loaded; reload before saving")
@@ -277,10 +330,14 @@ function M.new(d)
         if equal(parse(candidate["config.json"]), parse(previous["config.json"])) then candidate["config.json"] = previous["config.json"] end
         local runtime_changed = candidate["config.json"] ~= previous["config.json"] or candidate["settings.conf"] ~= previous["settings.conf"] or
             (rollback and d.read(pending) ~= nil)
-        local code, output = 0, "Node library validated."
-        if runtime_changed then code, output = validate(candidate) end
+        local code, output = 0, ""
+        -- Xray validates during its real startup. Only changed routing settings
+        -- require a firewall dry run; logging and node edits leave policy alone.
+        if candidate["settings.conf"] ~= previous["settings.conf"] or (rollback and d.read(pending)) then
+            code, output = validate(candidate)
+        end
         if code ~= 0 then return result(code, "Validation failed; current files retained.\n" .. output) end
-        check(expected == revision(), "Configuration changed during validation; reload before saving")
+        check(expected == revision(), "Configuration changed during apply; reload before saving")
         d.mkdir(conf .. "/backups")
         d.mkdir(backup)
         -- An interrupted transaction already has the correct recovery snapshot.
@@ -315,7 +372,7 @@ function M.new(d)
         end
         d.remove(pending)
         return result(0, output .. "\n" .. (rollback and "Previous configuration restored." or "Configuration saved.") ..
-            (not runtime_changed and " Running configuration unchanged; no restart." or running and " Service restarted." or " Service remains stopped."))
+            (not runtime_changed and " Running configuration unchanged; no restart." or running and " Service restarted." or " Service remains stopped; Xray configuration will be checked on next start."))
     end
 
     function self.get()
@@ -355,10 +412,12 @@ function M.new(d)
         if action == "logging-info" or action == "logging-warning" then
             check(not d.read(pending), "Interrupted apply detected; restore the previous configuration first")
             local candidate = snapshot()
-            local config = parse(candidate["config.json"])
-            config.log = config.log or {}
-            config.log.loglevel = action == "logging-info" and "info" or "warning"
-            candidate["config.json"] = d.json.stringify(config) .. "\n"
+            parse(candidate["config.json"])
+            candidate["config.json"] = replace_member(candidate["config.json"], "log", function(log)
+                return replace_member((not log or log == "null") and "{}" or log, "loglevel", function()
+                    return action == "logging-info" and '"info"' or '"warning"'
+                end)
+            end)
             return apply(candidate, request.revision)
         end
         if action == "save" then
