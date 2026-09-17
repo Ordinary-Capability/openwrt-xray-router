@@ -234,10 +234,19 @@ LuCI preserves the installed DNS policy; an ordinary save does not migrate it.
 
 ### Use a dedicated streaming node
 
-An optional `proxy-stream` outbound can keep Netflix, Amazon Prime Video,
-HBO/Max, and Disney+ on a separate VLESS/REALITY node. The default streaming
+Two optional outbounds, `proxy-stream` and `proxy-stream2`, can send different
+streaming services through different nodes. For example, route Netflix through
+`proxy-stream` and Disney+ through `proxy-stream2`. Each has its own node
+assignment, domain list, and enable switch under **Routing → Streaming routes**.
+If both enabled lists match, `proxy-stream` takes priority. Both streaming
+routes precede force-proxy/CN/default handling and have no automatic fallback.
+
+The default streaming
 rule matches only `example-stream.invalid`, so normal traffic keeps its
 existing routing until you configure the node and enable the streaming preset.
+Stream 2 starts disabled with an unassigned blackhole node and its own inert
+`example-stream2.invalid` domain. Saving in the updated UI adds the missing
+second outbound and rule to older configurations without changing the first.
 
 Use `examples/outbound-stream-vless-reality.json` for the outbound and
 `examples/routing-streaming.json` for the GeoSite rule. Replace the matching
@@ -267,7 +276,7 @@ are evaluated top to bottom. The supplied order is:
 1. DNS handling.
 2. Private addresses direct.
 3. Force-direct domains.
-4. Streaming domains through `proxy-stream` (inactive until configured).
+4. Streaming domains through `proxy-stream`, then `proxy-stream2` (inactive until configured).
 5. Force-proxy domains.
 6. `geosite:cn` direct.
 7. `geoip:cn` direct.
@@ -425,7 +434,7 @@ Install the LuCI dependencies and run `sh install.sh --with-luci` to add
 **Inspector**. Routing shows ordered rules and outbound-tag → node mappings,
 alongside routing and health-check settings. Proxy Nodes holds a reusable node
 library with aliases and outbound JSON; Routing dropdowns assign those nodes
-to the primary, backup, and streaming tags. Save & Apply includes the library
+to the primary, backup, and two streaming tags. Save & Apply includes the library
 in rollback, and library-only changes do not restart Xray. Tab switches preserve
 unsaved edits. See [LuCI installation and recovery](docs/LUCI.md).
 

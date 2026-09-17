@@ -16,7 +16,7 @@ function M.request(request)
     assert(duration == 30 or duration == 60 or duration == 120, "Capture duration must be 30, 60 or 120 seconds")
     local expected = request.expected or "any"
     assert(({ any = true, direct = true, proxy = true, ["proxy-main"] = true,
-        ["proxy-backup"] = true, ["proxy-stream"] = true })[expected], "Invalid expected path")
+        ["proxy-backup"] = true, ["proxy-stream"] = true, ["proxy-stream2"] = true })[expected], "Invalid expected path")
     return { device = request.device, duration = duration, expected = expected }
 end
 function M.interfaces(raw)

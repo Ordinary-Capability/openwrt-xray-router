@@ -108,6 +108,13 @@ for real services until the administrator installs the streaming preset and
 configures the outbound. It is not a member of the primary/backup balancer or
 observatory selector, and has no automatic fallback.
 
+`STREAMING2-PROXY` follows the first streaming rule and targets `proxy-stream2`.
+It has its own node, domain list, and enable switch, and starts disabled. Both
+rules also cover configured SOCKS/HTTP client listeners when enabled in LuCI.
+The first matching rule wins, so overlapping services use `proxy-stream` when
+both routes are enabled. A failure of one streaming node does not change the
+other path; neither streaming node falls back to the primary/backup balancer.
+
 GeoSite matching covers identifiable service/CDN domains, not every connection
 made by an application. CN kernel bypass still happens before Xray; disable
 the fast path when streaming rules must take priority over CN addresses.

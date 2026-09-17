@@ -75,6 +75,27 @@ assert.deepEqual(migrated.outbounds.slice(0, -1), legacy.outbounds);
 const inserted = migrated.routing.rules.findIndex(r => r.ruleTag === 'STREAMING-PROXY');
 assert.equal(migrated.routing.rules[inserted - 1].ruleTag, 'FORCE-DIRECT');
 assert.deepEqual(migrated.routing.rules[inserted].inboundTag, ['xray-router-stream-disabled']);
+// Existing installations gain stream2 only on save, without changing stream1 or DNS.
+const beforeStream2 = structuredClone(streaming);
+beforeStream2.outbounds = beforeStream2.outbounds.filter(o => o.tag !== 'proxy-stream2');
+beforeStream2.routing.rules = beforeStream2.routing.rules.filter(r => r.ruleTag !== 'STREAMING2-PROXY');
+const beforeStream2Raw = JSON.stringify(beforeStream2);
+const dualValues = model.read(beforeStream2Raw);
+assert.equal(dualValues.stream2_enabled, '0');
+assert.equal(dualValues.stream2_domains, '');
+const withStream2 = JSON.parse(model.build(beforeStream2Raw, dualValues));
+assert.deepEqual(withStream2.outbounds.slice(0, -1), beforeStream2.outbounds);
+assert.deepEqual(withStream2.dns, beforeStream2.dns);
+assert.deepEqual(withStream2.routing.rules.filter(r => r.ruleTag !== 'STREAMING2-PROXY'), beforeStream2.routing.rules);
+assert.equal(withStream2.routing.rules[withStream2.routing.rules.findIndex(r => r.ruleTag === 'STREAMING2-PROXY') - 1].ruleTag, 'STREAMING-PROXY');
+assert.throws(() => model.build(beforeStream2Raw, { ...dualValues, stream2_enabled: '1', stream2_domains: 'geosite:disney' }), /proxy-stream2/);
+const dualRaw = model.build(beforeStream2Raw, { ...dualValues, stream2: model.template('socks', 'proxy-stream2'),
+	stream2_enabled: '1', stream2_domains: 'geosite:disney\nfull:custom.example' });
+const dualDisabled = JSON.parse(model.build(dualRaw, { ...model.read(dualRaw), stream2_enabled: '0' }));
+assert.deepEqual(dualDisabled.routing.rules.find(r => r.ruleTag === 'STREAMING-PROXY'), streamRule);
+assert.deepEqual(dualDisabled.routing.rules.find(r => r.ruleTag === 'STREAMING2-PROXY').inboundTag, ['xray-router-stream-disabled']);
+assert.deepEqual(JSON.parse(model.build(JSON.stringify(dualDisabled), { ...model.read(JSON.stringify(dualDisabled)), stream2_enabled: '1' })), JSON.parse(dualRaw));
+assert.throws(() => model.build(dualRaw, { ...model.read(dualRaw), stream2_domains: '' }), /at least one streaming domain/);
 assert.equal(changed.outbounds[0].tag, 'proxy-main');
 assert.deepEqual(changed.routing.rules.find(r => r.ruleTag === 'FORCE-DIRECT').domain, ['domain:example-direct.invalid']);
 assert.deepEqual(changed.routing.rules.find(r => r.ruleTag === 'FORCE-PROXY').domain, ['domain:example.org', 'full:exact.example']);
@@ -171,6 +192,9 @@ async function testView(writable) {
     assert.equal(panel('nodes').hidden, true);
     assert.equal(field('xray-bind-proxy-main').value, 'node-main');
     assert.equal(field('xray-bind-proxy-backup').value, '');
+    assert.equal(field('xray-bind-proxy-stream2').value, '');
+    assert.equal(field('xray-stream2_enabled').value, '0');
+    assert.equal(field('xray-stream2_domains').disabled, !writable);
     assert.equal(button('Delete').disabled, true, 'assigned nodes cannot be deleted');
     const callsBeforeTabs = calls.length;
     button('Proxy Nodes').click();
@@ -188,7 +212,7 @@ async function testView(writable) {
     assert.equal(field('xray-boot').disabled, !writable);
     assert.equal(field('xray-boot').checked, false);
     assert.equal(field('xray-diagnostics').open, undefined, 'diagnostics starts collapsed');
-    for (const label of ['Save & Apply', 'Start', 'Add node', 'Edit', 'Duplicate', 'Test', 'Add streaming service presets', 'Update CN IP list'])
+    for (const label of ['Save & Apply', 'Start', 'Add node', 'Edit', 'Duplicate', 'Test', 'Add streaming service presets', 'Add streaming 2 service presets', 'Update CN IP list'])
         assert.equal(button(label).disabled, !writable, label);
     assert.equal(field('xray-bind-proxy-main').disabled, !writable);
     assert.equal(button('Logs').disabled, false);
@@ -204,10 +228,15 @@ async function testView(writable) {
     streamDomains.value = 'full:custom.example'; streamDomains.input();
     button('Add streaming service presets').click(); await tick();
     streamEnabled.value = '1'; streamEnabled.input();
+    choose('proxy-stream2', 'node-main');
+    const stream2Domains = field('xray-stream2_domains');
+    stream2Domains.value = 'geosite:disney'; stream2Domains.input();
+    field('xray-stream2_enabled').value = '1'; field('xray-stream2_enabled').input();
     const lan = field('xray-LAN_INTERFACES'); lan.value = 'br-guest'; lan.input();
     button('Proxy Nodes').click(); button('Inspector').click(); button('Routing').click();
     assert.equal(lan.value, 'br-guest');
     assert.equal(field('xray-bind-proxy-stream').value, jp);
+    assert.equal(stream2Domains.value, 'geosite:disney', 'stream2 draft survives tab switches');
     assert.equal(inspectorContext.isDirty(), true);
     button('Save & Apply').click(); await tick();
     const request = calls.find(c => c[0] === 'start');
@@ -218,6 +247,10 @@ async function testView(writable) {
     assert.equal(savedLibrary.nodes[jp].alias, 'jp-vps');
     assert.equal(saved.outbounds.find(o => o.tag === 'proxy-stream').protocol, 'vless');
     assert.deepEqual(saved.routing.rules.find(r => r.ruleTag === 'STREAMING-PROXY').domain, streamDomains.value.split('\n'));
+    assert.equal(savedLibrary.bindings['proxy-stream2'], 'node-main');
+    assert.equal(saved.outbounds.find(o => o.tag === 'proxy-stream2').protocol, 'socks');
+    assert.deepEqual(saved.routing.rules.find(r => r.ruleTag === 'STREAMING2-PROXY').domain, ['geosite:disney']);
+    assert.deepEqual(saved.routing.rules.find(r => r.ruleTag === 'STREAMING2-PROXY').inboundTag, ['tproxy-in', 'socks-in', 'http-in']);
     assert.deepEqual(saved.dns, original.dns);
     assert.equal(button('Add node').disabled, true);
     assert.equal(field('xray-bind-proxy-main').disabled, true);

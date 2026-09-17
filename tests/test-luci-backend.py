@@ -506,6 +506,88 @@ class BackendTest(unittest.TestCase):
         self.assertNotIn('tag', node['outbound'])
         self.assertEqual(node['outbound']['streamSettings']['sockopt']['mark'], 2)
 
+    def test_stream2_legacy_library_and_config_upgrade_and_rollback(self):
+        self.seed_host_node()
+        current = json.loads(self.original['config.json'])
+        legacy = json.loads(json.dumps(current))
+        legacy['outbounds'] = [o for o in legacy['outbounds'] if o['tag'] != 'proxy-stream2']
+        legacy['routing']['rules'] = [r for r in legacy['routing']['rules'] if r['ruleTag'] != 'STREAMING2-PROXY']
+        self.fs[self.conf + '/config.json'] = json.dumps(legacy)
+        library = json.loads(self.backend.get()['nodes'])
+        library['bindings'].pop('proxy-stream2')
+        self.fs[self.conf + '/nodes.json'] = json.dumps(library)
+        self.original = self.snapshot()
+        state = self.backend.get()
+        self.assertEqual(json.loads(state['nodes'])['bindings']['proxy-stream2'], '')
+        self.assertEqual(self.snapshot(), self.original, 'loading must not migrate files')
+        # Match append-only outbound migration from the browser model.
+        second = next(o for o in current['outbounds'] if o['tag'] == 'proxy-stream2')
+        current['outbounds'].remove(second)
+        current['outbounds'].append(second)
+        request = self.library_request()
+        request['config'] = json.dumps(current)
+        self.running = True
+        ok, result = self.call(request)
+        self.assertTrue(ok, result)
+        self.assertEqual(result['code'], 0)
+        self.assertEqual([c[0] for c in self.calls], ['restart'])
+        self.assertEqual(json.loads(self.fs[self.conf + '/config.json']), current)
+        ok, result = self.call({'action': 'rollback', 'revision': self.revision()})
+        self.assertTrue(ok, result)
+        self.assertEqual(self.snapshot(), self.original)
+        # Cached older clients can still save an absent, unassigned stream2 slot.
+        self.assertEqual(self.call(self.library_request())[1]['code'], 0)
+
+    def test_stream2_assignment_toggle_and_failed_restart_preserve_first_route(self):
+        self.seed_host_node()
+        self.running = True
+        request = self.library_request()
+        library, config = json.loads(request['nodes']), json.loads(request['config'])
+        library['nodes']['node-second'] = {'alias': 'stream2-vps', 'outbound': {
+            'protocol': 'socks', 'settings': {'address': '192.0.2.22', 'port': 1080}}}
+        library['bindings']['proxy-stream2'] = 'node-second'
+        second = next(o for o in config['outbounds'] if o['tag'] == 'proxy-stream2')
+        second.update(library['nodes']['node-second']['outbound'])
+        rule = next(r for r in config['routing']['rules'] if r['ruleTag'] == 'STREAMING2-PROXY')
+        rule.update(domain=['geosite:disney'], inboundTag=['tproxy-in', 'socks-in', 'http-in'])
+        request.update(config=json.dumps(config), nodes=json.dumps(library))
+        self.restart_failures = 1
+        self.assertEqual(self.call(request)[1]['code'], 1)
+        self.assertEqual(self.snapshot(), self.original)
+        request['revision'] = self.revision()
+        self.assertEqual(self.call(request)[1]['code'], 0)
+        first = next(r for r in config['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')
+        self.assertEqual(first, next(r for r in json.loads(self.original['config.json'])['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY'))
+        for tags in (['xray-router-stream-disabled'], ['tproxy-in', 'socks-in', 'http-in']):
+            rule['inboundTag'] = tags
+            request.update(config=json.dumps(config), revision=self.revision())
+            ok, result = self.call(request)
+            self.assertTrue(ok, result)
+            self.assertEqual(result['code'], 0)
+            saved = json.loads(self.fs[self.conf + '/config.json'])
+            self.assertEqual(saved, config)
+
+    def test_stream2_invalid_scope_node_and_rule_changes_rejected(self):
+        for mutation in ('blackhole', 'empty', 'scope', 'destination', 'order', 'missing', 'duplicate'):
+            with self.subTest(mutation=mutation):
+                request = self.request()
+                config = json.loads(request['config'])
+                second = next(o for o in config['outbounds'] if o['tag'] == 'proxy-stream2')
+                second.update(protocol='socks', settings={'address': '192.0.2.22', 'port': 1080})
+                rules = config['routing']['rules']
+                rule = next(r for r in rules if r['ruleTag'] == 'STREAMING2-PROXY')
+                rule.update(domain=['geosite:disney'], inboundTag=['tproxy-in', 'socks-in'])
+                if mutation == 'blackhole': second['protocol'] = 'blackhole'
+                elif mutation == 'empty': rule['domain'] = []
+                elif mutation == 'scope': rule['inboundTag'] = ['dns-global']
+                elif mutation == 'destination': rule['outboundTag'] = 'direct'
+                elif mutation == 'order': rules.remove(rule); rules.insert(0, rule)
+                elif mutation == 'missing': config['outbounds'].remove(second)
+                elif mutation == 'duplicate': rules.append(rule)
+                request['config'] = json.dumps(config)
+                self.assertFalse(self.call(request)[0])
+                self.assertEqual(self.snapshot(), self.original)
+
     def test_library_only_save_and_rename_do_not_restart_or_rewrite_runtime(self):
         self.seed_host_node()
         self.running = True
@@ -530,7 +612,7 @@ class BackendTest(unittest.TestCase):
         request = self.library_request()
         library = json.loads(request['nodes'])
         config = json.loads(request['config'])
-        for tag in ('proxy-backup', 'proxy-stream'):
+        for tag in ('proxy-backup', 'proxy-stream', 'proxy-stream2'):
             library['bindings'][tag] = 'node-proxy-main'
             index = next(i for i, o in enumerate(config['outbounds']) if o['tag'] == tag)
             config['outbounds'][index] = dict(library['nodes']['node-proxy-main']['outbound'], tag=tag)

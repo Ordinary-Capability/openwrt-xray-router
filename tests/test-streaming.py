@@ -25,7 +25,7 @@ await_label = HELPERS["await_label"]
 assert_unavailable = HELPERS["assert_unavailable"]
 
 
-def luci_config(config, enabled, setup=False):
+def luci_config(config, enabled, setup=False, second_enabled=None):
     """Generate the configuration through the actual browser model."""
     script = r'''
         const fs = require('fs');
@@ -33,15 +33,20 @@ def luci_config(config, enabled, setup=False):
         const raw = fs.readFileSync(0, 'utf8');
         const values = model.read(raw);
         values.stream_enabled = process.argv[2];
+        if (process.argv[4] !== 'preserve') values.stream2_enabled = process.argv[4];
         if (process.argv[3] === 'setup') {
             values.stream = model.template('socks', 'proxy-stream');
-            values.stream_domains = model.streamingPreset('');
+            values.stream_domains = 'geosite:netflix\ngeosite:primevideo\nfull:overlap.hbo.com';
+            values.stream2 = model.template('socks', 'proxy-stream2');
+            values.stream2_domains = 'geosite:hbo\ngeosite:disney';
+            values.stream2_enabled = '1';
         }
         process.stdout.write(model.build(raw, values));
     '''
     output = subprocess.run(['node', '-e', script,
         str(ROOT / 'luci-app-xray-router/htdocs/luci-static/resources/xray-router/model.js'),
-        '1' if enabled else '0', 'setup' if setup else 'preserve'],
+        '1' if enabled else '0', 'setup' if setup else 'preserve',
+        'preserve' if second_enabled is None else '1' if second_enabled else '0'],
         input=json.dumps(config), capture_output=True, text=True, check=True)
     return json.loads(output.stdout)
 
@@ -86,13 +91,12 @@ def main():
     env = dict(os.environ)
     env.setdefault("XRAY_LOCATION_ASSET", str(binary.parent))
     shipped = json.loads((ROOT / "config/config.json").read_text())
-    preset = json.loads((ROOT / "examples/routing-streaming.json").read_text())
     shipped = luci_config(shipped, True, setup=True)
-    assert next(r for r in shipped['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY') == preset
+    first_domains = next(r for r in shipped['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')['domain']
     with ExitStack() as stack:
         nodes = {}
         for tag, label in (("proxy-main", "main!!"), ("proxy-backup", "backup"),
-                           ("proxy-stream", "stream"), ("direct", "direct")):
+                           ("proxy-stream", "stream"), ("proxy-stream2", "second"), ("direct", "direct")):
             available = threading.Event()
             available.set()
             http = server(stack, ThreadingHTTPServer, HELPERS["HTTPHandler"])
@@ -116,23 +120,17 @@ def main():
                     settings={"redirect": f"127.0.0.1:{nodes[tag][0]}"})
             outbound.get("streamSettings", {}).get("sockopt", {}).pop("mark", None)
         for rule in config["routing"]["rules"]:
-            if rule["ruleTag"] == "STREAMING-PROXY":
-                rule.clear()
-                rule.update(copy.deepcopy(preset))
-                # This fixture replaces the LAN listeners with tproxy-in only.
-                # Keep a valid LuCI scope so disable actually changes the rule.
-                rule["inboundTag"] = ["tproxy-in"]
             if rule["ruleTag"] == "FORCE-DIRECT":
-                rule["domain"].append("full:direct-test.netflix.com")
+                rule["domain"] += ["full:direct-test.netflix.com", "full:direct-test.disneyplus.com"]
             if rule["ruleTag"] == "FORCE-PROXY":
                 rule["domain"].append("domain:netflix.com")
 
-        ports = [HELPERS["free_port"]() for _ in range(2)]
-        assert len(set(ports)) == 2, "ephemeral port collision; rerun test"
+        ports = [HELPERS["free_port"]() for _ in range(4)]
+        assert len(set(ports)) == 4, "ephemeral port collision; rerun test"
         config["inbounds"] = [
             {"tag": tag, "listen": "127.0.0.1", "port": port,
              "protocol": "socks", "settings": {"auth": "noauth", "udp": True}}
-            for tag, port in zip(("tproxy-in", "dns-global"), ports)
+            for tag, port in zip(("tproxy-in", "dns-global", "socks-in", "http-in"), ports)
         ]
         directory = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="xray-streaming-")))
         config_path = directory / "config.json"
@@ -145,14 +143,20 @@ def main():
             try:
                 default = lambda: request_http(ports[0], "ordinary.example.invalid")
                 stream = lambda: request_http(ports[0], "netflix.com")
+                stream2 = lambda: request_http(ports[0], "disneyplus.com")
                 await_label(process, default, "main!!")
-                for domain in ("netflix.com", "nflxvideo.net", "primevideo.com",
-                               "amazonvideo.com", "hbo.com", "hbomax.com", "max.com",
-                               "disneyplus.com", "bamgrid.com"):
-                    await_label(process, lambda: request_http(ports[0], domain), "stream")
-                    await_label(process, lambda: request_udp(ports[0], domain), "stream")
-                print("PASS: service and CDN domains use streaming for TCP and UDP", flush=True)
+                for domain, label in (("netflix.com", "stream"), ("nflxvideo.net", "stream"),
+                        ("primevideo.com", "stream"), ("amazonvideo.com", "stream"),
+                        ("hbo.com", "second"), ("hbomax.com", "second"), ("max.com", "second"),
+                        ("disneyplus.com", "second"), ("bamgrid.com", "second"), ("overlap.hbo.com", "stream")):
+                    # Exercise each client inbound tag; SOCKS is the local harness
+                    # protocol even for the HTTP-tagged fixture.
+                    for port in (ports[0], ports[2], ports[3]):
+                        await_label(process, lambda: request_http(port, domain), label)
+                        await_label(process, lambda: request_udp(port, domain), label)
+                print("PASS: separate TCP/UDP streaming paths on all client tags; first route wins overlaps", flush=True)
                 await_label(process, lambda: request_http(ports[0], "direct-test.netflix.com"), "direct")
+                await_label(process, lambda: request_http(ports[0], "direct-test.disneyplus.com"), "direct")
                 await_label(process, lambda: request_http(ports[0], "amazon.com"), "main!!")
                 await_label(process, lambda: request_http(ports[1], "netflix.com"), "main!!")
                 print("PASS: force-direct wins; Amazon shopping and global DNS keep their routes", flush=True)
@@ -161,29 +165,50 @@ def main():
                 await_label(process, default, "backup")
                 await_label(process, lambda: request_http(ports[1], "netflix.com"), "backup")
                 await_label(process, stream, "stream")
+                await_label(process, stream2, "second")
                 print("PASS: default/global DNS failover does not change the streaming exit", flush=True)
                 nodes["proxy-main"][1].set()
                 await_label(process, default, "main!!")
                 nodes["proxy-stream"][1].clear()
                 assert_unavailable(stream)
                 assert_unavailable(lambda: request_udp(ports[0], "netflix.com"))
+                await_label(process, stream2, "second")
                 await_label(process, default, "main!!")
                 print("PASS: streaming outage has no fallback; ordinary traffic still works", flush=True)
                 nodes["proxy-stream"][1].set()
                 await_label(process, stream, "stream")
+                nodes["proxy-stream2"][1].clear()
+                assert_unavailable(stream2)
+                assert_unavailable(lambda: request_udp(ports[0], "disneyplus.com"))
+                await_label(process, stream, "stream")
+                await_label(process, default, "main!!")
+                nodes["proxy-stream2"][1].set()
+                await_label(process, stream2, "second")
+                print("PASS: either streaming node can fail independently without fallback", flush=True)
                 # Disabling through LuCI must preserve the node and domains but stop matching.
                 disabled = luci_config(config, False)
                 assert disabled['outbounds'] == config['outbounds']
                 assert next(r for r in disabled['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')['inboundTag'] == ['xray-router-stream-disabled']
-                assert next(r for r in disabled['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')['domain'] == preset['domain']
+                assert next(r for r in disabled['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')['domain'] == first_domains
                 HELPERS["stop"](process)
                 config_path.write_text(json.dumps(disabled), encoding="utf-8")
                 subprocess.run([str(binary), "run", "-test", "-config", str(config_path)], check=True, env=env)
                 process = subprocess.Popen([str(binary), "run", "-config", str(config_path)],
                                            stdout=log, stderr=log, env=env)
                 await_label(process, stream, "main!!")
+                await_label(process, stream2, "second")
+                await_label(process, lambda: request_udp(ports[0], "disneyplus.com"), "second")
+                await_label(process, lambda: request_http(ports[0], "overlap.hbo.com"), "second")
+                print("PASS: disabling first stream preserves second and exposes its overlapping rule", flush=True)
+                disabled = luci_config(disabled, False, second_enabled=False)
+                HELPERS["stop"](process)
+                config_path.write_text(json.dumps(disabled), encoding="utf-8")
+                process = subprocess.Popen([str(binary), "run", "-config", str(config_path)],
+                                           stdout=log, stderr=log, env=env)
+                await_label(process, stream, "main!!")
+                await_label(process, stream2, "main!!")
                 await_label(process, lambda: request_udp(ports[0], "disneyplus.com"), "main!!")
-                print("PASS: LuCI disable keeps settings and returns streaming to normal routing", flush=True)
+                print("PASS: disabling both routes restores ordinary routing", flush=True)
             except BaseException:
                 log.flush()
                 print("\n".join((directory / "xray.log").read_text().splitlines()[-100:]),

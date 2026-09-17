@@ -6,7 +6,7 @@ const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'luci-app-xray-router/htdocs/luci-static/resources/xray-router/inspector.js'), 'utf8');
 function E(tag, attrs, children) {
 	if (typeof attrs === 'string' || Array.isArray(attrs)) { children = attrs; attrs = {}; }
-	return { tag, ...(attrs || {}), children: children || [], value: '', textContent: '',
+	return { tag, ...(attrs || {}), children: children || [], value: attrs && attrs.value || '', textContent: '',
 		replaceChildren(...next) { this.children = next; } };
 }
 function flatten(node) {
@@ -55,10 +55,11 @@ async function test(writable, embedded) {
 		active = true;
 	}
 	field('inspect-device').value = '192.168.1.100';
-	field('inspect-expected').value = 'proxy-stream';
+	assert(field('inspect-expected').children.some(n => n.value === 'proxy-stream2'));
+	field('inspect-expected').value = 'proxy-stream2';
 	button('Start capture').click(); await tick();
 	const call = calls.find(call => call.method === 'capture');
-	assert.deepEqual(call.args, ['192.168.1.100', 60, 'proxy-stream']);
+	assert.deepEqual(call.args, ['192.168.1.100', 60, 'proxy-stream2']);
 	assert.equal(button('Start capture').disabled, true);
 	assert.equal(button('Enable info logging…').disabled, true);
 	assert.equal(button('Stop / clean up').disabled, false);

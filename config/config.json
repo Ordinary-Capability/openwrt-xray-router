@@ -147,6 +147,15 @@
       }
     },
     {
+      "tag": "proxy-stream2",
+      "protocol": "blackhole",
+      "settings": {
+        "response": {
+          "type": "none"
+        }
+      }
+    },
+    {
       "tag": "direct",
       "protocol": "freedom",
       "settings": {},
@@ -277,6 +286,17 @@
         ],
         "outboundTag": "proxy-stream",
         "ruleTag": "STREAMING-PROXY"
+      },
+      {
+        "type": "field",
+        "inboundTag": [
+          "xray-router-stream-disabled"
+        ],
+        "domain": [
+          "domain:example-stream2.invalid"
+        ],
+        "outboundTag": "proxy-stream2",
+        "ruleTag": "STREAMING2-PROXY"
       },
       {
         "type": "field",

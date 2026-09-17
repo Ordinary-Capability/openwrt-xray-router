@@ -39,7 +39,7 @@ html:has(.xr-app) { scrollbar-gutter:stable; }
 .xr-app .xr-badge.is-error { background:#fff0ef; color:#b43c35; }
 .xr-app .xr-badge.is-pending { background:#edf3ff; color:#255fcc; }
 .xr-app .xr-status::before { content:''; display:inline-block; width:6px; height:6px; margin-right:6px; vertical-align:1px; border-radius:50%; background:currentColor; }
-.xr-app .xr-assignments { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.xr-app .xr-assignments { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
 .xr-app .xr-assignment { display:flex; flex-direction:column; gap:10px; padding:14px; border:1px solid #e5eaf2; border-radius:7px; background:#f8fafd; }
 .xr-app .xr-assignment label { font-size:12px; font-weight:650; font-family:ui-monospace,monospace; }
 .xr-app .xr-assignment select { width:100%; }

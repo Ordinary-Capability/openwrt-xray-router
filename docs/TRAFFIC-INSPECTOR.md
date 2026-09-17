@@ -16,7 +16,7 @@ required. The OpenWrt SDK package includes the new files automatically.
 1. Open **Services → Xray Router → Inspector**.
 2. Select a DHCP/ARP device suggestion or type its IPv4 address. Choose an
    expected path if you want mismatches highlighted: Direct, Normal proxy
-   (primary or backup), Streaming, Primary only, or Backup only.
+   (primary or backup), Streaming, Streaming 2, Primary only, or Backup only.
 3. Choose 30, 60, or 120 seconds and click **Start capture**. Reopen the affected
    app to establish new connections, then reproduce the issue. The gateway
    normally cannot identify which application owns each connection, so close

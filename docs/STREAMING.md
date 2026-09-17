@@ -1,13 +1,15 @@
-# Dedicated streaming outbound
+# Dedicated streaming outbounds
 
-Use `proxy-stream` for Netflix, Amazon Prime Video, HBO/Max, and Disney+ on one
-VLESS/REALITY node. Other proxied traffic continues using the primary/backup
+Use `proxy-stream` and `proxy-stream2` to send different services through
+different nodes. Each has an independent domain list and enable switch and
+can use any node from the library. Other proxied traffic continues using the primary/backup
 balancer. Matching streaming connections have no automatic fallback: if the
 streaming node is unavailable, they fail instead of switching exit regions.
 
 This is an optional configuration. The shipped `proxy-stream` is a blackhole
 and `STREAMING-PROXY` matches only `domain:example-stream.invalid`. Installing
 the project does not activate streaming rules for real domains.
+`proxy-stream2` is also a blackhole; its `STREAMING2-PROXY` rule starts disabled.
 
 ## Configure and enable in LuCI
 
@@ -26,15 +28,38 @@ updated UI with `sh scripts/install-luci.sh` and signing into LuCI again.
    domains. Edit **Streaming domains** to remove services or add others.
 3. Set **Streaming routing** to **Enabled**. If streaming destinations with
    CN IPs must also use this node, disable **CN IPv4 fast path** under Routing.
-4. Click **Save & Apply**. Validation checks the node and GeoSite groups before
-   installing the candidate configuration. A running service restarts; a
-   stopped service stays stopped. Failed application uses the existing
-   configuration rollback flow.
+4. Click **Save & Apply**. A running service applies the candidate through a
+   real restart; startup failure restores the previous configuration. A stopped
+   service stays stopped and parses Xray settings at its next start. Use
+   **Validate saved configuration** separately for an explicit preflight.
 
 The UI creates missing streaming objects for older installations during save.
 It rejects enabling a blackhole node or an empty domain list. It cannot check
 that the streaming provider accepts your node's exit IP; test actual playback
 after applying. DNS retains the separate policy described below.
+
+## Split services between two nodes
+
+Assign another node to `proxy-stream2` under **Outbound assignments**, then
+open **Streaming routes** and edit the two lists independently. For example:
+
+| Outbound | Assigned node | Domain list |
+| --- | --- | --- |
+| `proxy-stream` | `us-vps` | `geosite:netflix` and `geosite:primevideo` |
+| `proxy-stream2` | `jp-vps` | `geosite:hbo` and `geosite:disney` |
+
+Enable **Streaming routing** and **Streaming 2 routing**, then **Save & Apply**.
+Each preset button adds all four groups only to its own list; remove groups
+that belong to the other path. Matching is first-rule-wins: `STREAMING-PROXY`
+precedes `STREAMING2-PROXY`, so an overlapping domain uses `proxy-stream`.
+Disabling one route preserves its node and domain list and leaves the other
+route enabled. If an enabled node fails, its matched traffic fails without
+automatically switching to the other streaming node or primary/backup.
+
+The new slot is added on Save & Apply for older configurations. Existing
+version 1 node libraries gain an empty `proxy-stream2` binding without losing
+aliases or assignments. Merely loading the page does not change saved files.
+The Inspector's **Streaming 2** expected-path option checks `proxy-stream2`.
 
 ## Configure through SSH
 
@@ -80,7 +105,7 @@ that a streaming node works or that a service accepts its exit IP.
 ## Rule priority and additional services
 
 DNS handling and private-address bypass retain priority. An explicit
-`FORCE-DIRECT` match also wins. The streaming rule wins over `FORCE-PROXY`,
+`FORCE-DIRECT` match also wins. Both streaming rules win over `FORCE-PROXY`,
 CN rules inside Xray, and the default proxy rule. Remove a conflicting
 force-direct entry if that domain should use the streaming node.
 
@@ -107,7 +132,7 @@ the provider may reject a datacenter exit IP or impose account-region rules.
 ## DNS and region
 
 These streaming rules control client connections. They do not move DNS to
-`proxy-stream`: CN DNS stays direct, while global DoH and non-A/AAAA queries
+either streaming outbound: CN DNS stays direct, while global DoH and non-A/AAAA queries
 use the primary/backup balancer. Older installations need the README's DNS
 failover migration. If neither proxy is available, uncached streaming names
 can still fail to resolve even when the streaming node is healthy. A stream node in

@@ -2,8 +2,12 @@
 'require baseclass';
 
 var streamDisabledTag = 'xray-router-stream-disabled';
-var streamPlaceholder = 'domain:example-stream.invalid';
-var proxyTags = ['proxy-main', 'proxy-backup', 'proxy-stream'];
+var streams = [
+	{ key: 'stream', tag: 'proxy-stream', rule: 'STREAMING-PROXY', after: 'FORCE-DIRECT', placeholder: 'domain:example-stream.invalid' },
+	{ key: 'stream2', tag: 'proxy-stream2', rule: 'STREAMING2-PROXY', after: 'STREAMING-PROXY', placeholder: 'domain:example-stream2.invalid' }
+];
+var proxyTags = ['proxy-main', 'proxy-backup', 'proxy-stream', 'proxy-stream2'];
+var proxyKeys = ['primary', 'backup', 'stream', 'stream2'];
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
 function optional(items, key, value) {
@@ -30,15 +34,17 @@ function streamingScope(config, tags) {
 	});
 }
 function ensureStreaming(config) {
-	if (!optional(config.outbounds, 'tag', 'proxy-stream'))
-		config.outbounds.push({ tag: 'proxy-stream', protocol: 'blackhole', settings: { response: { type: 'none' } } });
-	if (!optional(config.routing.rules, 'ruleTag', 'STREAMING-PROXY')) {
-		var direct = find(config.routing.rules, 'ruleTag', 'FORCE-DIRECT');
-		config.routing.rules.splice(config.routing.rules.indexOf(direct) + 1, 0, {
-			type: 'field', inboundTag: ['tproxy-in'], domain: [streamPlaceholder],
-			outboundTag: 'proxy-stream', ruleTag: 'STREAMING-PROXY'
-		});
-	}
+	streams.forEach(function(slot) {
+		if (!optional(config.outbounds, 'tag', slot.tag))
+			config.outbounds.push({ tag: slot.tag, protocol: 'blackhole', settings: { response: { type: 'none' } } });
+		if (!optional(config.routing.rules, 'ruleTag', slot.rule)) {
+			var previous = find(config.routing.rules, 'ruleTag', slot.after);
+			config.routing.rules.splice(config.routing.rules.indexOf(previous) + 1, 0, {
+				type: 'field', inboundTag: [streamDisabledTag], domain: [slot.placeholder],
+				outboundTag: slot.tag, ruleTag: slot.rule
+			});
+		}
+	});
 }
 function domains(text, placeholder) {
 	var entries = text.split(/\r?\n/).map(function(s) { return s.trim(); }).filter(Boolean);
@@ -49,12 +55,15 @@ function domains(text, placeholder) {
 
 return baseclass.extend({
 	proxyTags: proxyTags,
+	streams: streams,
 	library: function(raw) {
 		var library = JSON.parse(raw);
 		if (!library || library.version !== 1 || !library.nodes || !library.bindings)
 			throw new Error('Invalid proxy node library.');
 		// Older Lua JSON libraries encode an empty table as an array.
 		if (Array.isArray(library.nodes) && !library.nodes.length) library.nodes = {};
+		// Version 1 libraries created before the second streaming slot remain valid.
+		if (!Object.prototype.hasOwnProperty.call(library.bindings, 'proxy-stream2')) library.bindings['proxy-stream2'] = '';
 		return library;
 	},
 	node: function(alias, raw, library, id) {
@@ -85,7 +94,7 @@ return baseclass.extend({
 				outbound = previous && previous.protocol === 'blackhole' ? clone(previous) : { protocol: 'blackhole', settings: { response: { type: 'none' } } };
 			}
 			outbound.tag = tag;
-			values[['primary', 'backup', 'stream'][index]] = JSON.stringify(outbound);
+			values[proxyKeys[index]] = JSON.stringify(outbound);
 		});
 		return values;
 	},
@@ -128,8 +137,6 @@ return baseclass.extend({
 	read: function(raw) {
 		var config = JSON.parse(raw);
 		ensureStreaming(config);
-		var stream = find(config.routing.rules, 'ruleTag', 'STREAMING-PROXY');
-		var empty = stream.domain.length === 1 && stream.domain[0] === streamPlaceholder;
 		var duration = config.observatory.probeInterval;
 		if (!/^(?:\d+(?:\.\d+)?[hms])+$/.test(duration))
 			throw new Error('Use a probe interval expressed in hours, minutes or seconds.');
@@ -137,26 +144,31 @@ return baseclass.extend({
 		duration.replace(/(\d+(?:\.\d+)?)([hms])/g, function(_, amount, unit) {
 			seconds += Number(amount) * { h: 3600, m: 60, s: 1 }[unit];
 		});
-		return {
+		var values = {
 			primary: JSON.stringify(find(config.outbounds, 'tag', 'proxy-main'), null, 2),
 			backup: JSON.stringify(find(config.outbounds, 'tag', 'proxy-backup'), null, 2),
-			stream: JSON.stringify(find(config.outbounds, 'tag', 'proxy-stream'), null, 2),
-			stream_enabled: !empty && streamingScope(config, stream.inboundTag) ? '1' : '0',
-			stream_domains: empty ? '' : stream.domain.join('\n'),
 			probe_url: config.observatory.probeUrl,
 			probe_interval: seconds,
 			direct: find(config.routing.rules, 'ruleTag', 'FORCE-DIRECT').domain.join('\n'),
 			proxy: find(config.routing.rules, 'ruleTag', 'FORCE-PROXY').domain.join('\n')
 		};
+		streams.forEach(function(slot) {
+			var rule = find(config.routing.rules, 'ruleTag', slot.rule);
+			var empty = rule.domain.length === 1 && rule.domain[0] === slot.placeholder;
+			values[slot.key] = JSON.stringify(find(config.outbounds, 'tag', slot.tag), null, 2);
+			values[slot.key + '_enabled'] = !empty && streamingScope(config, rule.inboundTag) ? '1' : '0';
+			values[slot.key + '_domains'] = empty ? '' : rule.domain.join('\n');
+		});
+		return values;
 	},
 	build: function(raw, values, library) {
 		if (library) values = Object.assign({}, values, this.bind(raw, library));
 		var savedValues = this.read(raw);
 		var config = JSON.parse(raw);
-		var hadStreamRule = optional(config.routing.rules, 'ruleTag', 'STREAMING-PROXY');
+		var hadStreamRules = streams.map(function(slot) { return optional(config.routing.rules, 'ruleTag', slot.rule); });
 		ensureStreaming(config);
-		['primary', 'backup', 'stream'].forEach(function(name) {
-			var tag = { primary: 'proxy-main', backup: 'proxy-backup', stream: 'proxy-stream' }[name];
+		proxyKeys.forEach(function(name, index) {
+			var tag = proxyTags[index];
 			var outbound = JSON.parse(values[name]);
 			if (!outbound || Array.isArray(outbound) || typeof outbound !== 'object' ||
 				typeof outbound.protocol !== 'string' || !outbound.protocol)
@@ -165,22 +177,25 @@ return baseclass.extend({
 			var previous = find(config.outbounds, 'tag', tag);
 			config.outbounds[config.outbounds.indexOf(previous)] = outbound;
 		});
-		var streamRule = find(config.routing.rules, 'ruleTag', 'STREAMING-PROXY');
-		if (values.stream_enabled !== '0' && values.stream_enabled !== '1')
-			throw new Error('Choose whether streaming routing is enabled.');
-		streamRule.domain = domains(values.stream_domains, streamPlaceholder);
-		if (values.stream_enabled === '1') {
-			if (find(config.outbounds, 'tag', 'proxy-stream').protocol === 'blackhole')
-				throw new Error('Configure the streaming node before enabling streaming routing.');
-			if (streamRule.domain.length === 1 && streamRule.domain[0] === streamPlaceholder)
-				throw new Error('Add at least one streaming domain or service preset.');
-		}
 		if (optional(config.inbounds, 'tag', streamDisabledTag))
 			throw new Error('The reserved streaming disable tag is already used by an inbound.');
-		// Preserve an active scope on ordinary saves; re-enable all configured proxy listeners.
-		if (!hadStreamRule || values.stream_enabled !== savedValues.stream_enabled || values.stream_domains !== savedValues.stream_domains)
-			streamRule.inboundTag = values.stream_enabled === '0' ? [streamDisabledTag] :
-				streamingScope(config, streamRule.inboundTag) ? streamRule.inboundTag : streamingInbounds(config);
+		streams.forEach(function(slot, index) {
+			var rule = find(config.routing.rules, 'ruleTag', slot.rule);
+			var enabled = values[slot.key + '_enabled'], list = values[slot.key + '_domains'];
+			if (enabled !== '0' && enabled !== '1')
+				throw new Error('Choose whether streaming routing is enabled (' + slot.tag + ').');
+			rule.domain = domains(list, slot.placeholder);
+			if (enabled === '1') {
+				if (find(config.outbounds, 'tag', slot.tag).protocol === 'blackhole')
+					throw new Error('Configure the streaming node before enabling streaming routing (' + slot.tag + ').');
+				if (rule.domain.length === 1 && rule.domain[0] === slot.placeholder)
+					throw new Error('Add at least one streaming domain or service preset (' + slot.tag + ').');
+			}
+			// Each route retains its own scope and domains across ordinary saves.
+			if (!hadStreamRules[index] || enabled !== savedValues[slot.key + '_enabled'] || list !== savedValues[slot.key + '_domains'])
+				rule.inboundTag = enabled === '0' ? [streamDisabledTag] :
+					streamingScope(config, rule.inboundTag) ? rule.inboundTag : streamingInbounds(config);
+		});
 		var interval = Number(values.probe_interval);
 		if (!Number.isInteger(interval) || interval < 1 || interval > 3600)
 			throw new Error('Probe interval must be 1–3600 seconds.');

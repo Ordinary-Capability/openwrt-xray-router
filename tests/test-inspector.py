@@ -38,6 +38,17 @@ class ParserTest(LuaTest):
 
     def log(self, text): self.model.log(text, 10)
 
+    def test_second_streaming_path_is_distinct_from_first(self):
+        request = self.table({'device': DEVICE, 'duration': 30, 'expected': 'proxy-stream2'})
+        self.parser.request(request)
+        self.model = self.parser.new(request, 0)
+        self.log('from 192.168.1.100:50100 accepted tcp:8.8.8.8:443 [tproxy-in -> proxy-stream2]')
+        self.log('from 192.168.1.100:50101 accepted tcp:8.8.4.4:443 [tproxy-in -> proxy-stream]')
+        rows = self.plain(self.model.result())['rows']
+        self.assertEqual(rows[0]['path'], 'proxy-stream2')
+        self.assertFalse(rows[0]['mismatch'])
+        self.assertTrue(rows[1]['mismatch'])
+
     def test_correlates_source_sniff_rule_access_and_error_without_guessing_success(self):
         self.log('[Info] [101] proxy/dokodemo: received request for 192.168.1.100:50100')
         self.log('[Info] [101] app/dispatcher: sniffed domain: netflix.com')

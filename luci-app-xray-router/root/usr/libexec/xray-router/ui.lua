@@ -1,9 +1,12 @@
 -- XRAY_ROUTER_PROJECT: LuCI backend. Dependencies are injected for isolated tests.
 local M = {}
 local files = { "config.json", "settings.conf", "nodes.json" }
-local proxy_tags = { "proxy-main", "proxy-backup", "proxy-stream" }
+local proxy_tags = { "proxy-main", "proxy-backup", "proxy-stream", "proxy-stream2" }
 local stream_disabled_tag = "xray-router-stream-disabled"
-local stream_placeholder = "domain:example-stream.invalid"
+local streams = {
+    { tag = "proxy-stream", rule = "STREAMING-PROXY", after = "FORCE-DIRECT", placeholder = "domain:example-stream.invalid" },
+    { tag = "proxy-stream2", rule = "STREAMING2-PROXY", after = "STREAMING-PROXY", placeholder = "domain:example-stream2.invalid" }
+}
 local function check(ok, message) if not ok then error(message, 0) end end
 local function equal(a, b)
     if type(a) ~= type(b) then return false end
@@ -41,18 +44,18 @@ local function streaming_scope(config, tags)
     end
     return seen["tproxy-in"] and count == #tags
 end
-local function ensure_streaming(config)
-    if not optional(config.outbounds, "tag", "proxy-stream") then
-        table.insert(config.outbounds, { tag = "proxy-stream", protocol = "blackhole",
+local function ensure_streaming(config, slot)
+    if not optional(config.outbounds, "tag", slot.tag) then
+        table.insert(config.outbounds, { tag = slot.tag, protocol = "blackhole",
             settings = { response = { type = "none" } } })
     end
-    if not optional(config.routing.rules, "ruleTag", "STREAMING-PROXY") then
-        local direct = named(config.routing.rules, "ruleTag", "FORCE-DIRECT")
+    if not optional(config.routing.rules, "ruleTag", slot.rule) then
+        local direct = named(config.routing.rules, "ruleTag", slot.after)
         for index, rule in ipairs(config.routing.rules) do
             if rule == direct then
                 table.insert(config.routing.rules, index + 1, { type = "field",
-                    inboundTag = { "tproxy-in" }, domain = { stream_placeholder },
-                    outboundTag = "proxy-stream", ruleTag = "STREAMING-PROXY" })
+                    inboundTag = { stream_disabled_tag }, domain = { slot.placeholder },
+                    outboundTag = slot.tag, ruleTag = slot.rule })
                 break
             end
         end
@@ -182,8 +185,10 @@ function M.new(d)
         end
         check(count <= 64, "At most 64 proxy nodes are supported")
         for tag in pairs(library.bindings) do
-            check(tag == "proxy-main" or tag == "proxy-backup" or tag == "proxy-stream", "Unknown outbound assignment")
+            check(tag == "proxy-main" or tag == "proxy-backup" or tag == "proxy-stream" or tag == "proxy-stream2", "Unknown outbound assignment")
         end
+        -- Extend existing version 1 libraries in memory; get() never writes files.
+        if library.bindings["proxy-stream2"] == nil then library.bindings["proxy-stream2"] = "" end
         for _, tag in ipairs(proxy_tags) do
             local id = library.bindings[tag]
             check(type(id) == "string" and (id == "" or library.nodes[id]), "Assignment refers to a missing node: " .. tag)
@@ -256,24 +261,26 @@ function M.new(d)
         check(type(raw) == "string" and #raw <= 524288, "Configuration exceeds 512 KiB")
         local old, new = parse(old_raw), parse(raw)
         -- Normalize only missing legacy streaming objects, then compare all other fields.
-        local stream = optional(new.outbounds, "tag", "proxy-stream")
-        local stream_rule = optional(new.routing.rules, "ruleTag", "STREAMING-PROXY")
         local tags = { "proxy-main", "proxy-backup" }
-        if stream or stream_rule then
-            check(stream and stream_rule, "Streaming requires both an outbound and a routing rule")
-            ensure_streaming(old)
-            tags[#tags + 1] = "proxy-stream"
-            valid_domains(stream_rule.domain)
-            local enabled = streaming_scope(old, stream_rule.inboundTag)
-            check(enabled or equal(stream_rule.inboundTag, { stream_disabled_tag }), "Invalid streaming inbound scope")
-            check(not optional(new.inbounds, "tag", stream_disabled_tag), "Reserved streaming disable tag is used by an inbound")
-            -- The shipped inactive rule is accepted unchanged, including by older UI clients.
-            local empty = equal(stream_rule.domain, { stream_placeholder })
-            check(not enabled or empty or stream.protocol ~= "blackhole", "Configure the streaming node before enabling streaming routing")
-            local previous_rule = named(old.routing.rules, "ruleTag", "STREAMING-PROXY")
-            check(not enabled or not empty or equal(previous_rule, stream_rule), "Add at least one streaming domain or service preset")
-            previous_rule.domain = stream_rule.domain
-            previous_rule.inboundTag = stream_rule.inboundTag
+        for _, slot in ipairs(streams) do
+            local stream = optional(new.outbounds, "tag", slot.tag)
+            local stream_rule = optional(new.routing.rules, "ruleTag", slot.rule)
+            if stream or stream_rule then
+                check(stream and stream_rule, "Streaming requires both an outbound and a routing rule: " .. slot.tag)
+                ensure_streaming(old, slot)
+                tags[#tags + 1] = slot.tag
+                valid_domains(stream_rule.domain)
+                local enabled = streaming_scope(old, stream_rule.inboundTag)
+                check(enabled or equal(stream_rule.inboundTag, { stream_disabled_tag }), "Invalid streaming inbound scope: " .. slot.tag)
+                check(not optional(new.inbounds, "tag", stream_disabled_tag), "Reserved streaming disable tag is used by an inbound")
+                -- The shipped inactive rule is accepted unchanged, including by older UI clients.
+                local empty = equal(stream_rule.domain, { slot.placeholder })
+                check(not enabled or empty or stream.protocol ~= "blackhole", "Configure the streaming node before enabling streaming routing: " .. slot.tag)
+                local previous_rule = named(old.routing.rules, "ruleTag", slot.rule)
+                check(not enabled or not empty or equal(previous_rule, stream_rule), "Add at least one streaming domain or service preset: " .. slot.tag)
+                previous_rule.domain = stream_rule.domain
+                previous_rule.inboundTag = stream_rule.inboundTag
+            end
         end
         -- Allow changes only to named nodes, health probes and exposed domain lists.
         for _, tag in ipairs(tags) do
@@ -401,7 +408,7 @@ function M.new(d)
             local node = parse(request.config)
             -- Reuse the same node validation as library saves, including tag ownership.
             validate_library(d.json.stringify({ version = 1, nodes = { ["node-test"] = { alias = "test", outbound = node } },
-                bindings = { ["proxy-main"] = "", ["proxy-backup"] = "", ["proxy-stream"] = "" } }))
+                bindings = { ["proxy-main"] = "", ["proxy-backup"] = "", ["proxy-stream"] = "", ["proxy-stream2"] = "" } }))
             return d.test_node(node)
         end
         local changes_stack = { save=true, rollback=true, start=true, restart=true,
@@ -431,7 +438,10 @@ function M.new(d)
             if request.nodes and request.nodes ~= "" then
                 library = validate_library(request.nodes)
                 for _, tag in ipairs(proxy_tags) do
-                    check(equal(resolved(library, config, tag), named(config.outbounds, "tag", tag)), "Node assignment does not match outbound: " .. tag)
+                    local outbound = optional(config.outbounds, "tag", tag)
+                    -- A cached older UI may save a config without the optional new slot.
+                    check((tag == "proxy-stream2" and not outbound and library.bindings[tag] == "") or
+                        equal(resolved(library, config, tag), outbound), "Node assignment does not match outbound: " .. tag)
                 end
             else
                 library = library_for(config, previous["nodes.json"] or nil)

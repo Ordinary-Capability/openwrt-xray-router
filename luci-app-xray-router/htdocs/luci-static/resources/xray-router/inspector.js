@@ -57,7 +57,7 @@ return baseclass.extend({
 		duration.value = String(current.duration || 60);
 		var expected = E('select', { 'id': 'inspect-expected', 'class': 'cbi-input-select' }, [
 			['any', _('Any path')], ['direct', _('Direct')], ['proxy', _('Normal proxy (primary or backup)')],
-			['proxy-stream', _('Streaming')], ['proxy-main', _('Primary only')], ['proxy-backup', _('Backup only')]
+			['proxy-stream', _('Streaming')], ['proxy-stream2', _('Streaming 2')], ['proxy-main', _('Primary only')], ['proxy-backup', _('Backup only')]
 		].map(function(item) { return E('option', { 'value': item[0] }, item[1]); }));
 		expected.value = current.expected || 'any';
 		var search = E('input', { 'id': 'inspect-filter', 'type': 'search', 'placeholder': _('Filter domain, IP, path or rule'),

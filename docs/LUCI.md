@@ -108,13 +108,15 @@ until the page reloads; editing a node's outbound clears its previous result.
   One library node can serve multiple tags; each runtime copy receives the
   appropriate fixed tag. Templates contain example values to replace. Advanced
   protocol fields are preserved. Node aliases are independent of routing tags.
-- **Streaming outbound:** configure a separate node in **Proxy Nodes** with the
+- **Streaming outbounds:** configure separate nodes in **Proxy Nodes** with the
   same outbound editor and VLESS REALITY/SOCKS5 templates. In **Routing**, assign
-  it to `proxy-stream`, enable streaming routing, and add the
+  each to `proxy-stream` or `proxy-stream2`, enable its streaming route, and add the
   Netflix/Prime Video/HBO/Max/Disney+ presets, or enter custom domains. Preset
   additions retain custom entries and avoid duplicates. Disable streaming
   without losing the node or domain list. An enabled streaming route requires
   a non-blackhole node and at least one domain. See [Streaming setup](STREAMING.md).
+  The two lists are independent; `proxy-stream` wins overlapping matches.
+  Stream 2 starts disabled, and Inspector can check it as **Streaming 2**.
 - **Health checks:** set an HTTP(S) probe URL and an interval of 1–3600 seconds.
 - **Routing:** select LAN interfaces, CN fast path, IPv6 handling, and forced
   domain rules. Bare domains become `domain:` entries. Empty domain lists use
@@ -146,8 +148,8 @@ streaming settings. Disabling streaming affects the domain rule only; any
 separate custom IP rules configured through SSH retain their own behavior.
 
 Older configurations without streaming objects load normally. Saving adds
-only the missing `proxy-stream` outbound and `STREAMING-PROXY` rule after
-`FORCE-DIRECT`. Streaming remains disabled until explicitly enabled. Existing
+only missing streaming outbounds and rules: `STREAMING-PROXY` after
+`FORCE-DIRECT`, then `STREAMING2-PROXY`. New routes remain disabled until explicitly enabled. Existing
 streaming objects and their additional fields are preserved; the UI can edit
 only the node, domain list and enabled state, not rule order or destination.
 
@@ -161,7 +163,8 @@ it on apply. Unassign a node before deleting it; unconfigured slots block traffi
 
 The root-only `/etc/xray-router/nodes.json` stores schema version 1, a `nodes`
 object keyed by stable IDs (`alias` and `outbound` per node), and a `bindings`
-object mapping the three proxy tags to node IDs. An empty binding means
+object mapping the four proxy tags to node IDs. Older version 1 libraries gain
+an empty `proxy-stream2` binding when saved. An empty binding means
 unconfigured. Up to 64 nodes and 256 KiB of library JSON are supported.
 Unused nodes are checked for valid JSON structure; Xray checks their complete
 protocol/transport configuration when they are assigned and applied.

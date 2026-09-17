@@ -68,7 +68,7 @@ return view.extend({
 			if (Array.isArray(kind)) {
 				node = E('select', attrs, kind.map(function(pair) { return E('option', { 'value': pair[0] }, pair[1]); }));
 			} else if (kind === 'textarea') {
-				attrs.rows = key === 'primary' || key === 'backup' || key === 'stream' ? 16 : 5;
+				attrs.rows = key === 'primary' || key === 'backup' || key === 'stream' || key === 'stream2' ? 16 : 5;
 				node = E('textarea', attrs);
 			} else { attrs.type = kind || 'text'; node = E('input', attrs); }
 			node.value = value == null ? '' : value;
@@ -261,17 +261,21 @@ return view.extend({
 				field('LAN_INTERFACES', _('LAN interfaces'), state.settings.LAN_INTERFACES, _('Space-separated device names, for example br-lan br-guest.')),
 				field('ENABLE_CN_FASTPATH', _('CN IPv4 fast path'), state.settings.ENABLE_CN_FASTPATH, _('When enabled, CN IPs bypass Xray before force-proxy domain rules.'), [['1', _('Enabled')], ['0', _('Disabled')]]),
 				field('IPV6_MODE', _('Global IPv6'), state.settings.IPV6_MODE, '', [['block', _('Block')], ['bypass', _('Bypass proxy')]])]),
-			E('details', { 'class': 'xr-card xr-disclosure' }, [E('summary', {}, _('Streaming routes')), E('div', {}, [
-				field('stream_enabled', _('Streaming routing'), values.stream_enabled,
-					_('Disabling keeps the node and domain list for later use.'), [['0', _('Disabled')], ['1', _('Enabled')]]),
-				field('stream_domains', _('Streaming domains'), values.stream_domains,
-					_('One domain per line. Supports domain:, full:, and geosite: groups. Bare domains include subdomains.'), 'textarea'),
-				button(_('Add streaming service presets'), function() {
-					fields.stream_domains.value = model.streamingPreset(fields.stream_domains.value);
-					dirty = true; updateButtons(); refreshOverview();
-				}),
-				help(_('Streaming routing help'), _('Presets add Netflix, Prime Video, HBO/Max and Disney+ while keeping custom entries. The installed GeoSite database must include these groups. Streaming uses proxy-stream without fallback; force-direct and CN IPv4 bypass take priority. Global DNS follows its own routing rule, so DNS and streaming exit regions can differ.'))
-			])]),
+			E('details', { 'class': 'xr-card xr-disclosure' }, [E('summary', {}, _('Streaming routes')),
+				E('p', { 'class': 'xr-muted' }, _('Assign a node to each streaming tag above, then choose its domains here. If both enabled lists match, proxy-stream wins. Move a service to the second list to use proxy-stream2.')),
+				E('div', { 'class': 'xr-form-grid' }, model.streams.map(function(slot, index) {
+					return E('div', {}, [E('h4', {}, slot.tag),
+						field(slot.key + '_enabled', index ? _('Streaming 2 routing') : _('Streaming routing'), values[slot.key + '_enabled'],
+							_('Disabling keeps the node and domain list for later use.'), [['0', _('Disabled')], ['1', _('Enabled')]]),
+						field(slot.key + '_domains', index ? _('Streaming 2 domains') : _('Streaming domains'), values[slot.key + '_domains'],
+							_('One domain per line. Supports domain:, full:, and geosite: groups. Bare domains include subdomains.'), 'textarea'),
+						button(index ? _('Add streaming 2 service presets') : _('Add streaming service presets'), function() {
+							var input = fields[slot.key + '_domains'];
+							input.value = model.streamingPreset(input.value);
+							dirty = true; updateButtons(); refreshOverview();
+						})]);
+				})),
+				help(_('Streaming routing help'), _('Presets add Netflix, Prime Video, HBO/Max and Disney+ while keeping custom entries. Keep only the services intended for each path. The installed GeoSite database must include these groups. Each streaming route uses its assigned node without fallback; force-direct and CN IPv4 bypass take priority. Global DNS follows its own routing rule, so DNS and streaming exit regions can differ.'))]),
 			E('details', { 'class': 'xr-card xr-disclosure' }, [E('summary', {}, _('Health checks')),
 				field('probe_url', _('Probe URL'), values.probe_url, _('Use a reliable HTTP(S) endpoint reachable through the primary.')),
 				field('probe_interval', _('Probe interval (seconds)'), values.probe_interval, _('1–3600 seconds. Switching affects new connections after a health check completes.'), 'number'),
