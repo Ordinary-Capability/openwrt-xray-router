@@ -177,8 +177,15 @@
       "streamSettings": {
         "sockopt": {
           "mark": 2,
-          "dialerProxy": "proxy-main"
+          "dialerProxy": "dns-failover"
         }
+      }
+    },
+    {
+      "tag": "dns-failover",
+      "protocol": "loopback",
+      "settings": {
+        "inboundTag": "dns-forward"
       }
     },
     {
@@ -236,9 +243,10 @@
         "type": "field",
         "inboundTag": [
           "dns-global",
-          "dns-global-default"
+          "dns-global-default",
+          "dns-forward"
         ],
-        "outboundTag": "proxy-main",
+        "balancerTag": "proxy-failover",
         "ruleTag": "DNS-GLOBAL-PROXY"
       },
       {

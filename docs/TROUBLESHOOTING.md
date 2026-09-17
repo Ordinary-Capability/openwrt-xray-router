@@ -91,9 +91,16 @@ routed by Xray when it enters the transparent path.
   destination also makes the primary appear unhealthy. The default pause is
   10 seconds; allow additional time for a failed probe to finish.
 - Confirm the force-proxy and default rules use `proxy-failover`.
-- DNS has no failover: global queries still use `proxy-main`. If DNS cache
-  misses fail during an outage, test client failover with a known destination
-  IP or a previously resolved name.
+- Confirm `DNS-GLOBAL-PROXY` uses `balancerTag: "proxy-failover"` with no
+  `outboundTag`, and matches `dns-global`, `dns-global-default`, and `dns-forward`.
+  For non-A/AAAA records, `dns-out` must dial through `dns-failover`, whose
+  loopback inbound tag is `dns-forward`. Older configurations pin both paths to
+  the primary; follow the DNS migration in the README. Reinstalling alone
+  preserves the old policy.
+- Allow the primary health probe to fail and retry DNS queries. Existing DoH
+  connections/UDP sessions do not move between nodes, and cached answers do not
+  demonstrate the current outbound. Global DNS fails closed when the backup is
+  unavailable; CN DNS retains its direct path.
 - For UDP-only failures, verify both proxy nodes support UDP. HTTP probes do
   not prove UDP health.
 

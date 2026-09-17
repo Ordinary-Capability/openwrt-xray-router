@@ -100,6 +100,7 @@ return baseclass.extend({
 					return String(server.address || '') + (server.port ? ':' + server.port : '');
 				}).join(', ') || (outbound.protocol === 'freedom' ? 'Direct connection' :
 					outbound.protocol === 'blackhole' ? 'Blocked / unconfigured' :
+					outbound.protocol === 'loopback' ? 'Internal routing via ' + (settings.inboundTag || '(no tag)') :
 					outbound.protocol === 'dns' ? 'DNS handler' : 'No server address'),
 				via: outbound.streamSettings && outbound.streamSettings.sockopt && outbound.streamSettings.sockopt.dialerProxy ||
 					outbound.proxySettings && outbound.proxySettings.tag || '' };

@@ -59,12 +59,20 @@ For A/AAAA requests, the `dns-out` outbound hijacks the request into Xray's
 built-in DNS module:
 
 - `geosite:cn` uses `223.5.5.5` through the direct outbound.
-- `geosite:geolocation-!cn` uses Cloudflare DoH through `proxy-main`.
-- unmatched names use the global DoH server through `proxy-main`.
+- `geosite:geolocation-!cn` uses Cloudflare DoH through `proxy-failover`.
+- unmatched names use the global DoH server through `proxy-failover`.
 
-Other query types are forwarded to `1.1.1.1:53` through `proxy-main`. This
+Other query types are forwarded to `1.1.1.1:53` through the same balancer. This
 avoids silently discarding non-address DNS records, while the routing-critical
 A/AAAA responses still use Xray's split DNS and cache.
+
+`DNS-GLOBAL-PROXY` matches `dns-global`, `dns-global-default`, and `dns-forward`
+before private/direct/domain rules. The DNS outbound's `dialerProxy` must name
+an outbound, so it points to `dns-failover`: a loopback outbound that re-enters
+routing with inbound tag `dns-forward`. This bypasses the DNS hijack rules and
+reaches the balancer without a new socket listener. The non-address rule's
+`action: "direct"` means forward the DNS packet; its actual network path still
+goes through this proxy selection, never an automatic direct Internet fallback.
 
 Traditional TCP/UDP port-53 queries that a client sends to an external resolver
 are also caught by the TProxy inbound and routed to `dns-out`. Encrypted browser
@@ -78,16 +86,18 @@ healthy, and otherwise uses its `fallbackTag`, `proxy-backup`. Keeping only the
 primary in the selector preserves primary preference regardless of backup
 latency. Probing continues during an outage, allowing automatic recovery.
 
-The force-proxy and default client traffic rules use the balancer. DNS keeps
-its original policy: global DNS and non-address queries use `proxy-main`,
-and CN DNS goes direct. There is no DNS failover, so global DNS cache misses
-can fail during a primary outage even when the backup carries client traffic.
+The force-proxy and default client traffic rules, global DoH, and non-address
+DNS forwarding share the balancer. CN DNS goes direct. DNS caches continue to
+serve existing answers according to the configured cache policy.
 
 Selection applies to new connections/sessions after health results change.
 Before the first successful primary probe, the backup is selected. Failed
 connections are not replayed, and existing sessions are not migrated. If the
 backup is also unavailable (or remains the shipped blackhole), proxied traffic
 fails closed. Direct/CN traffic retains its existing routing policy.
+This also applies to reused DoH connections and DNS forwarding sessions:
+queries may need a retry during an outage, and a healthy backup DoH connection
+can remain in use after primary recovery until it reconnects.
 
 ## Dedicated streaming selection
 
@@ -102,7 +112,7 @@ GeoSite matching covers identifiable service/CDN domains, not every connection
 made by an application. CN kernel bypass still happens before Xray; disable
 the fast path when streaming rules must take priority over CN addresses.
 DNS keeps the policy above and may require a separate change when the stream
-exit region differs from the primary. See [Streaming setup](STREAMING.md).
+exit region differs from the selected primary/backup. See [Streaming setup](STREAMING.md).
 
 ## Stop and failure behavior
 

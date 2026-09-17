@@ -119,6 +119,9 @@ def main():
             if rule["ruleTag"] == "STREAMING-PROXY":
                 rule.clear()
                 rule.update(copy.deepcopy(preset))
+                # This fixture replaces the LAN listeners with tproxy-in only.
+                # Keep a valid LuCI scope so disable actually changes the rule.
+                rule["inboundTag"] = ["tproxy-in"]
             if rule["ruleTag"] == "FORCE-DIRECT":
                 rule["domain"].append("full:direct-test.netflix.com")
             if rule["ruleTag"] == "FORCE-PROXY":
@@ -156,8 +159,9 @@ def main():
 
                 nodes["proxy-main"][1].clear()
                 await_label(process, default, "backup")
+                await_label(process, lambda: request_http(ports[1], "netflix.com"), "backup")
                 await_label(process, stream, "stream")
-                print("PASS: default failover does not change the streaming exit", flush=True)
+                print("PASS: default/global DNS failover does not change the streaming exit", flush=True)
                 nodes["proxy-main"][1].set()
                 await_label(process, default, "main!!")
                 nodes["proxy-stream"][1].clear()
@@ -170,6 +174,7 @@ def main():
                 # Disabling through LuCI must preserve the node and domains but stop matching.
                 disabled = luci_config(config, False)
                 assert disabled['outbounds'] == config['outbounds']
+                assert next(r for r in disabled['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')['inboundTag'] == ['xray-router-stream-disabled']
                 assert next(r for r in disabled['routing']['rules'] if r['ruleTag'] == 'STREAMING-PROXY')['domain'] == preset['domain']
                 HELPERS["stop"](process)
                 config_path.write_text(json.dumps(disabled), encoding="utf-8")

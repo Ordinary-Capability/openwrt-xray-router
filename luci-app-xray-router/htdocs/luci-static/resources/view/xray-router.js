@@ -234,7 +234,7 @@ return view.extend({
 					E('p', { 'class': 'xr-muted' }, _('Choose which node each outbound tag uses.'))])),
 				state.nodes_notice ? E('p', { 'class': 'alert-message warning' }, state.nodes_notice) : '',
 				E('div', { 'class': 'xr-assignments' }, assignments),
-				help(_('How assignments work'), _('One node can serve several tags. Save & Apply activates changes. Global DNS uses proxy-main; backup selection applies to the client-traffic balancer.'))]),
+				help(_('How assignments work'), _('One node can serve several tags. Save & Apply activates changes. Global DNS follows the DNS-GLOBAL-PROXY rule shown above; the current default uses the primary/backup balancer.'))]),
 				E('section', { 'class': 'xr-card' }, [E('div', { 'class': 'xr-section-head' }, E('div', {}, [E('h3', {}, _('Routing rules')), E('p', { 'class': 'xr-muted' }, message)])),
 				table([_('Order / rule'), _('Match conditions'), _('Outbound / proxy node')], mapping.rules.map(function(rule) {
 					var balancer = mapping.balancers.filter(function(item) { return item.tag === rule.target; })[0];
@@ -270,12 +270,12 @@ return view.extend({
 					fields.stream_domains.value = model.streamingPreset(fields.stream_domains.value);
 					dirty = true; updateButtons(); refreshOverview();
 				}),
-				help(_('Streaming routing help'), _('Presets add Netflix, Prime Video, HBO/Max and Disney+ while keeping custom entries. The installed GeoSite database must include these groups. Streaming uses proxy-stream without fallback; force-direct and CN IPv4 bypass take priority. Global DNS still uses the primary node.'))
+				help(_('Streaming routing help'), _('Presets add Netflix, Prime Video, HBO/Max and Disney+ while keeping custom entries. The installed GeoSite database must include these groups. Streaming uses proxy-stream without fallback; force-direct and CN IPv4 bypass take priority. Global DNS follows its own routing rule, so DNS and streaming exit regions can differ.'))
 			])]),
 			E('details', { 'class': 'xr-card xr-disclosure' }, [E('summary', {}, _('Health checks')),
 				field('probe_url', _('Probe URL'), values.probe_url, _('Use a reliable HTTP(S) endpoint reachable through the primary.')),
 				field('probe_interval', _('Probe interval (seconds)'), values.probe_interval, _('1–3600 seconds. Switching affects new connections after a health check completes.'), 'number'),
-				help(_('About failover'), _('Client traffic uses the backup while the primary is unhealthy and returns when it recovers. Global DNS continues to use the primary.'))])
+				help(_('About failover'), _('New connections use the backup after a failed primary health probe and return after recovery. Global DNS uses the same selection when DNS-GLOBAL-PROXY targets proxy-failover. Assign a working backup node; an unassigned backup blocks traffic. Existing connections are not moved.'))])
 		]);
 		var nodesPanel = E('div', { 'id': 'xray-panel-nodes', 'role': 'tabpanel', 'aria-labelledby': 'xray-tab-nodes' }, [
 			E('section', { 'class': 'xr-card' }, [E('div', { 'class': 'xr-section-head' }, [E('div', {}, [E('h3', {}, _('Your proxy nodes')),

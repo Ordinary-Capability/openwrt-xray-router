@@ -131,14 +131,17 @@ not reload the live firewall or edit `/etc/config/firewall`; it can create the
 project's include symlink when that link is missing. Starting the service still
 installs the policy route and reloads the firewall to activate interception.
 
-The primary is preferred for client traffic. Global DNS keeps using the
-primary; this UI does not introduce DNS failover. The status indicator reports
+The primary is preferred for client traffic and, in the current configuration
+template, global DNS. Both use `proxy-failover` after DNS migration; older
+installations retain their saved DNS policy until the README migration is
+applied. Check the `DNS-GLOBAL-PROXY` target in the route table. The status indicator reports
 whether the service is running, not which outbound the health checker selected.
 Probe details are available in Xray logs when its log level is `info`.
 
 Streaming connects to its dedicated node without fallback. Force-direct
 rules take priority, and CN fast path can bypass the streaming rules. Global
-DNS keeps using the primary. The page explains these limits beside the
+DNS follows its own primary/backup selection, which can produce a different
+exit region from streaming. The page explains these limits beside the
 streaming settings. Disabling streaming affects the domain rule only; any
 separate custom IP rules configured through SSH retain their own behavior.
 

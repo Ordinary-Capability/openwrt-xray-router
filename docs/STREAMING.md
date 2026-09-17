@@ -107,9 +107,10 @@ the provider may reject a datacenter exit IP or impose account-region rules.
 ## DNS and region
 
 These streaming rules control client connections. They do not move DNS to
-`proxy-stream`: CN DNS stays direct, global DNS uses `proxy-main`, and
-non-A/AAAA queries also use `proxy-main`. Consequently, a primary-node outage
-can still prevent uncached streaming names from resolving. A stream node in
+`proxy-stream`: CN DNS stays direct, while global DoH and non-A/AAAA queries
+use the primary/backup balancer. Older installations need the README's DNS
+failover migration. If neither proxy is available, uncached streaming names
+can still fail to resolve even when the streaming node is healthy. A stream node in
 a different region may receive unsuitable CDN answers or encounter region
 checks based on inconsistent DNS and traffic exits.
 

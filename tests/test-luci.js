@@ -19,6 +19,11 @@ assert.deepEqual(changed.dns, original.dns);
 assert.deepEqual(changed.inbounds, original.inbounds);
 assert.deepEqual(changed.routing.balancers, original.routing.balancers);
 assert.deepEqual(changed.outbounds.find(o => o.tag === 'dns-out'), original.outbounds.find(o => o.tag === 'dns-out'));
+assert.deepEqual(changed.outbounds.find(o => o.tag === 'dns-failover'), original.outbounds.find(o => o.tag === 'dns-failover'));
+assert.deepEqual(changed.routing.rules.find(r => r.ruleTag === 'DNS-GLOBAL-PROXY'),
+	original.routing.rules.find(r => r.ruleTag === 'DNS-GLOBAL-PROXY'));
+assert.equal(model.overview(raw).outbounds.find(o => o.tag === 'dns-failover').endpoint,
+	'Internal routing via dns-forward');
 // Existing streaming configuration round-trips through the expanded editor.
 const streaming = JSON.parse(raw);
 const streamOutbound = streaming.outbounds.find(o => o.tag === 'proxy-stream');

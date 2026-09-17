@@ -66,14 +66,17 @@ placeholder test reports a skip if `jsonfilter` is absent).
 On a development machine with Python 3 and a current Xray binary, run:
 
 ```sh
+python3 -m pip install h2
 python3 tests/test-failover.py /path/to/xray
 ```
 
 This offline integration test runs Xray against local endpoints and checks
 primary preference, outage failover, recovery, and failure of both nodes for
-default TCP/UDP traffic and force-proxy traffic. It also checks that global DNS routing
-and TXT DNS forwarding stay on the primary. It requires the newer DNS/tunnel
-syntax used by the supplied JSON;
+default TCP/UDP traffic, force-proxy traffic, global DoH A/AAAA queries, and TXT
+forwarding over both client DNS transports. CN DNS stays direct, including
+when both proxy nodes are down. The test uses local HTTP/2 without TLS (`h2c`)
+to exercise Xray's DoH client without Internet access or certificates. Production
+keeps HTTPS with certificate verification. It requires the newer DNS/tunnel syntax;
 older binaries may silently ignore those fields even when `run -test` passes.
 
 Installed administrator files live under `/etc/xray-router`. Reinstalling
@@ -175,12 +178,12 @@ The supplied configuration already connects the failover pieces:
   its selector. If the primary has no successful health result, its
   `fallbackTag` sends new connections to `proxy-backup`. A successful later
   probe automatically returns new connections to the primary.
-- Force-proxy rules and default TCP/UDP traffic use this balancer.
+- Force-proxy rules, default TCP/UDP traffic, and global DNS use this balancer.
 
-DNS routing stays unchanged: CN DNS goes direct, while global DNS and
-non-A/AAAA forwarding use `proxy-main`. There is no DNS failover; uncached
-global DNS queries can fail while the primary is down, even when client
-connections can use the backup.
+CN DNS goes direct. Global DoH uses `DNS-GLOBAL-PROXY` with
+`balancerTag: "proxy-failover"`. Non-A/AAAA forwarding reaches that same rule
+through the internal `dns-failover` loopback outbound, tagged `dns-forward`.
+Both paths use the primary when healthy and the backup after a failed probe.
 
 Selectors match tag prefixes. Do not add other outbound tags beginning with
 `proxy-main`, or add the backup to the selector: that would allow load balancing
@@ -193,6 +196,12 @@ startup, traffic may use the backup. If both nodes fail, proxied traffic fails;
 there is no automatic direct fallback. The probe checks HTTP connectivity,
 not every destination or UDP capability. Use nodes supporting UDP for the
 project's UDP and non-address DNS forwarding.
+
+DNS caches can keep answering without a network request. Existing DoH
+connections and forwarded UDP sessions retain their selected node until
+reconnected; an in-flight query may time out and need a retry during an outage.
+Recovery changes the selection for new connections, not an already open DoH
+connection to the backup.
 
 The backup is optional: leaving its blackhole placeholder means proxy traffic
 is blocked while the primary is considered unavailable, including startup.
@@ -208,6 +217,20 @@ For an existing installation, reinstall the updated scripts, then manually
 merge `observatory`, the `proxy-backup` outbound, `routing.balancers`, and the
 `balancerTag` changes in `FORCE-PROXY` and `DEFAULT-PROXY` from the supplied
 `config/config.json`. Reinstallation preserves your existing configuration.
+
+To add DNS failover to an installation that already has client failover:
+
+1. Back up `/etc/xray-router/config.json`.
+2. Copy the `dns-failover` loopback outbound from the template. Keep its
+   `settings.inboundTag` as `dns-forward`; it opens no listening port.
+3. Change `dns-out.streamSettings.sockopt.dialerProxy` from `proxy-main` to
+   `dns-failover`. This field takes an outbound tag, not a balancer tag.
+4. In `DNS-GLOBAL-PROXY`, add `dns-forward` to `inboundTag`, remove
+   `outboundTag`, and set `balancerTag` to `proxy-failover`. Keep this rule before
+   private/direct/domain rules. Preserve the CN DNS rule and resolver settings.
+5. Assign a usable backup, then run `xrayctl validate` and `xrayctl restart`.
+
+LuCI preserves the installed DNS policy; an ordinary save does not migrate it.
 
 ### Use a dedicated streaming node
 
